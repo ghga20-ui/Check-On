@@ -46,6 +46,32 @@ describe("conditional monthly writes", () => {
     await saveSlotAttendance("2026-09", "2026-09-09", "a", slot(2), slot(1));
     expect(mocks.write).not.toHaveBeenCalled();
   });
+  it("allows adding three absences after PC marked the original one synced", async () => {
+    const base = slot(1);
+    const remote = {...base, syncedToNeis: true, closedOnNeis: true};
+    const edited = {...slot(1), checkedAt: "2026-09-09T11:00:00Z", absences: [1,2,3,4].map(n => slot(n).absences[0])};
+    mocks.snapshot.mockResolvedValue(snapshot({a: remote}));
+    await saveSlotAttendance("2026-09", "2026-09-09", "a", edited, base);
+    expect(mocks.write.mock.calls[0][1].records["2026-09-09"].a).toMatchObject({absences: edited.absences, syncedToNeis:false, closedOnNeis:false});
+  });
+  it("keeps PC sync flags on a retry of an already uploaded edit", async () => {
+    const edited = {...slot(2), checkedAt:"2026-09-09T11:00:00Z"};
+    mocks.snapshot.mockResolvedValue(snapshot({a:{...edited,syncedToNeis:true}}));
+    await saveSlotAttendance("2026-09", "2026-09-09", "a", edited, slot(1));
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+  it("still rejects a new teacher edit with the same absences but a newer timestamp", async () => {
+    mocks.snapshot.mockResolvedValue(snapshot({a:{...slot(1),checkedAt:"2026-09-09T12:00:00Z",syncedToNeis:true}}));
+    await expect(saveSlotAttendance("2026-09", "2026-09-09", "a", slot(2), slot(1))).rejects.toBeInstanceOf(DriveConflictError);
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+  it("retries safely when PC sync completes between the read and conditional write", async () => {
+    mocks.snapshot.mockResolvedValueOnce(snapshot({a:slot(1)})).mockResolvedValueOnce(snapshot({a:{...slot(1),syncedToNeis:true}}, '"v2"'));
+    mocks.write.mockRejectedValueOnce(new DriveError(412,"changed")).mockResolvedValueOnce(undefined);
+    await saveSlotAttendance("2026-09", "2026-09-09", "a", slot(2), slot(1));
+    expect(mocks.write).toHaveBeenCalledTimes(2);
+    expect(mocks.write.mock.calls[1][1].records["2026-09-09"].a.syncedToNeis).toBe(false);
+  });
   it("does not retry authentication errors", async () => {
     mocks.snapshot.mockResolvedValue(snapshot({}));
     mocks.write.mockRejectedValue(new DriveError(401, "expired"));

@@ -98,7 +98,8 @@ export async function saveSlotAttendance(
     absences: [...value.absences].sort((a, b) => String(a.studentId ?? a.studentNumber).localeCompare(String(b.studentId ?? b.studentNumber), undefined, {numeric: true})),
     groupId: value.groupId, rosterRevision: value.rosterRevision,
     checkedAt: value.checkedAt, source: value.source,
-    syncedToNeis: value.syncedToNeis, closedOnNeis: value.closedOnNeis,
+    // PC synchronization bookkeeping does not change the teacher's attendance edit.
+    // Keep checkedAt/source/roster identity in the comparison to protect real edits.
   };
   const equal = (a: SlotAttendance | null | undefined, b: SlotAttendance | null | undefined) =>
     JSON.stringify(normalized(a)) === JSON.stringify(normalized(b));
@@ -114,7 +115,7 @@ export async function saveSlotAttendance(
       base = null;
     }
     if (!equal(current, base)) throw new DriveConflictError();
-    doc.records[date] = { ...(doc.records[date] ?? {}), [slotId]: payload };
+    doc.records[date] = { ...(doc.records[date] ?? {}), [slotId]: {...payload, syncedToNeis: false, closedOnNeis: false} };
     if (payload.groupId) doc.schemaVersion = 2;
     try {
       await validateRoster();
