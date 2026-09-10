@@ -10,6 +10,14 @@ const blankPayload = {
 };
 
 describe("offline queue state", () => {
+  it("does not mark a newer draft synced when an older upload completes", () => {
+    const queue = enqueueSave([], { date: "2026-05-04", slotId: "mon-3", payload: blankPayload, baseline: null });
+    const newer = enqueueSave(queue, { date: "2026-05-04", slotId: "mon-3",
+      payload: { ...blankPayload, checkedAt: "2026-05-04T11:00:00Z" }, baseline: null });
+    const result = markStatusByTarget(newer, "2026-05-04", "mon-3", "synced", blankPayload.checkedAt);
+    expect(result[0].status).toBe("pending");
+    expect(result[0].baseline).toBeNull();
+  });
   it("stores pending saves in insertion order and marks them synced", () => {
     const first = enqueueSave([], {
       date: "2026-05-04",

@@ -67,6 +67,17 @@ class FakeStore:
         self.saved_monthly = monthly
 
 
+def test_pc_save_rejects_remote_change_since_screen_was_loaded(monkeypatch):
+    store = FakeStore()
+    store.monthly = MonthlyAttendance(month="2026-04", records={"2026-04-20": {
+        "mon-3": SlotAttendance(absences=[], checkedAt="newer", source="mobile")
+    }})
+    monkeypatch.setattr(gui_api, "build_store", lambda: store)
+    result = json.loads(Api().save_slot_attendance("2026-04-20", "mon-3", '{"3":"absent"}', "older"))
+    assert result["code"] == "attendance_conflict"
+    assert store.saved_monthly is None
+
+
 def test_timetable_tsv_api_preserves_nonnumeric_class_label(monkeypatch):
     monkeypatch.setattr(gui_api, "build_store", lambda: FakeStore())
 

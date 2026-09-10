@@ -32,6 +32,9 @@ def register_upgrader(
 def migrate(data: dict) -> dict:
     """Migrate raw schema data up to the current schema version."""
     version = data.get("schemaVersion", SCHEMA_VERSION)
+    # v2 is an explicit monthly attendance contract, not a rewrite of legacy files.
+    if version == 2 and "month" in data and "records" in data:
+        return dict(data)
     if version > SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(
             f"file was written by a newer app (v{version} > v{SCHEMA_VERSION})"

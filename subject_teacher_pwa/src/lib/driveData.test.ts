@@ -5,7 +5,8 @@ const writeJson = vi.fn();
 
 vi.mock("./drive", () => ({
   readJson: (...args: unknown[]) => readJson(...args),
-  writeJson: (...args: unknown[]) => writeJson(...args),
+  readJsonSnapshot: async (...args: unknown[]) => (await readJson(...args)) ?? { id: null, data: null, etag: null },
+  writeJsonSnapshot: (...args: unknown[]) => writeJson(...args),
 }));
 
 import { FILE_NAMES, loadSettings, saveSlotAttendance } from "./driveData";
@@ -57,7 +58,7 @@ describe("driveData", () => {
     expect(writeJson).toHaveBeenCalledTimes(1);
     const [name, doc, existingId] = writeJson.mock.calls[0];
     expect(name).toBe("attendance-2026-05.json");
-    expect(existingId).toBeNull();
+    expect(existingId.id).toBeNull();
     expect(doc.records["2026-05-04"]["mon-3"].absences).toHaveLength(1);
     expect(doc.month).toBe("2026-05");
   });
@@ -86,7 +87,7 @@ describe("driveData", () => {
     await saveSlotAttendance("2026-05", "2026-05-04", "mon-3", absentSlot);
 
     const [, doc, existingId] = writeJson.mock.calls[0];
-    expect(existingId).toBe("month-id");
+    expect(existingId.id).toBe("month-id");
     expect(Object.keys(doc.records["2026-05-04"]).sort()).toEqual(["mon-1", "mon-3"]);
   });
 });

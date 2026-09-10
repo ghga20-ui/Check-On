@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Root from "./Root";
@@ -8,6 +8,10 @@ import { clearDriveCache, loadDriveCache, saveDriveCache } from "./lib/localCach
 import type { LoadedDriveData } from "./lib/driveData";
 
 vi.mock("./lib/auth", () => ({
+  usesServerAuth: false,
+  restoreSession: vi.fn().mockRejectedValue(Object.assign(new Error("auth"), {name: "AuthRequiredError"})),
+  AUTH_CHANGED: "checkon-auth-changed",
+  hasValidAccessToken: vi.fn().mockReturnValue(false),
   initAuth: vi.fn().mockResolvedValue(undefined),
   isConfigured: vi.fn().mockReturnValue(true),
   requestAccessToken: vi.fn().mockResolvedValue("token"),
@@ -30,18 +34,19 @@ vi.mock("./lib/driveData", () => ({
 vi.mock("./App", () => ({
   default: (props: {
     stale?: boolean;
+    canSync?: boolean;
     onRefresh?: () => void;
     onSignOut?: () => void;
   }) => (
     <div>
-      <p data-testid="app">app · stale={String(props.stale)}</p>
+      <p data-testid="app">app · stale={String(props.stale)} connected={String(props.canSync)}</p>
       <button type="button" onClick={props.onRefresh}>refresh</button>
       <button type="button" onClick={props.onSignOut}>signout</button>
     </div>
   ),
 }));
 
-import { initAuth, requestAccessToken } from "./lib/auth";
+import { hasValidAccessToken, initAuth, requestAccessToken } from "./lib/auth";
 import { loadAll } from "./lib/driveData";
 
 const EMPTY: LoadedDriveData = {
@@ -60,7 +65,7 @@ describe("Root sign-in", () => {
   it("never requests a token on page load (no surprise Google window)", async () => {
     render(<Root />);
     expect(await screen.findByRole("button", { name: /Google 계정으로 시작하기/ })).toBeInTheDocument();
-    expect(initAuth).not.toHaveBeenCalled();
+    expect(initAuth).toHaveBeenCalled();
     expect(requestAccessToken).not.toHaveBeenCalled();
   });
 
@@ -68,7 +73,7 @@ describe("Root sign-in", () => {
     render(<Root />);
     await userEvent.click(await screen.findByRole("button", { name: /Google 계정으로 시작하기/ }));
     await waitFor(() => expect(requestAccessToken).toHaveBeenCalledTimes(1));
-    expect(initAuth).toHaveBeenCalledTimes(1);
+    expect(initAuth).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -87,13 +92,24 @@ describe("Root stale-while-revalidate", () => {
     // No login screen, and crucially no Google window on load.
     expect(screen.queryByRole("button", { name: /Google 계정으로 시작하기/ })).not.toBeInTheDocument();
     expect(requestAccessToken).not.toHaveBeenCalled();
-    expect(initAuth).not.toHaveBeenCalled();
+    expect(initAuth).toHaveBeenCalled();
   });
 
   it("shows the login screen when no cache exists", async () => {
     render(<Root />);
     expect(await screen.findByRole("button", { name: /Google 계정으로 시작하기/ })).toBeInTheDocument();
     expect(screen.queryByTestId("app")).not.toBeInTheDocument();
+    expect(requestAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("detects expired permission when returning to the app without opening Google", async () => {
+    vi.mocked(hasValidAccessToken).mockReturnValue(true);
+    await saveDriveCache(EMPTY, "2026-07");
+    render(<Root />);
+    expect(await screen.findByTestId("app")).toHaveTextContent("connected=true");
+    vi.mocked(hasValidAccessToken).mockReturnValue(false);
+    act(() => window.dispatchEvent(new Event("pageshow")));
+    expect(screen.getByTestId("app")).toHaveTextContent("connected=false");
     expect(requestAccessToken).not.toHaveBeenCalled();
   });
 
@@ -106,7 +122,7 @@ describe("Root stale-while-revalidate", () => {
     await userEvent.click(screen.getByRole("button", { name: "refresh" }));
 
     await waitFor(() => expect(requestAccessToken).toHaveBeenCalledTimes(1));
-    expect(initAuth).toHaveBeenCalledTimes(1);
+    expect(initAuth).toHaveBeenCalledTimes(2);
     expect(loadAll).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(screen.getByTestId("app")).toHaveTextContent("stale=false"),

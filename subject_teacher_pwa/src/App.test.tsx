@@ -48,27 +48,26 @@ describe("mobile app", () => {
     expect(marked).toHaveAttribute("aria-pressed", "true");
     expect(marked).toHaveAttribute("data-mark", "absent");
 
-    // Second tap toggles straight back to 출석 (no 3-state cycling).
+    // A separate tap after the double-tap window toggles back to 출석.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 500);
     await user.click(marked);
+    clock.mockRestore();
     expect(screen.getByRole("button", { name: "3번 김도윤 출석" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
   });
 
-  it("marks 인정결과 with a long press on a chip", () => {
+  it("marks 인정결과 with two consecutive taps on a chip", () => {
     vi.useFakeTimers();
     try {
       render(<App initialDate="2026-05-04" />);
       fireEvent.click(screen.getByRole("button", { name: /2-1 문학.*열기/ }));
 
       const chip = screen.getByRole("button", { name: "3번 김도윤 출석" });
-      fireEvent.pointerDown(chip);
-      act(() => {
-        vi.advanceTimersByTime(600);
-      });
-      fireEvent.pointerUp(chip);
-      fireEvent.click(chip); // browsers still emit click after the press
+      fireEvent.click(chip);
+      act(() => { vi.advanceTimersByTime(150); });
+      fireEvent.click(chip);
 
       const marked = screen.getByRole("button", { name: "3번 김도윤 인정결과" });
       expect(marked).toHaveAttribute("data-mark", "excused");
@@ -134,6 +133,7 @@ describe("mobile app", () => {
       "2026-05-04",
       "mon-3",
       expect.objectContaining({ absences: [], source: "mobile" }),
+      null,
     );
   });
 
@@ -296,6 +296,7 @@ describe("mobile app", () => {
       "2026-05-04",
       "mon-3",
       expect.objectContaining({ source: "mobile", syncedToNeis: false }),
+      null,
     );
   });
 
@@ -315,7 +316,7 @@ describe("mobile app", () => {
     await user.click(screen.getByRole("button", { name: "저장" }));
 
     // No premature "saved" message while Drive is still pending.
-    expect(screen.getByText("기기에 저장됨 · Drive 반영 중…")).toBeInTheDocument();
+    expect(screen.getByText("기기 저장 완료 · 동기화 중")).toBeInTheDocument();
     expect(screen.queryByText("저장 완료")).not.toBeInTheDocument();
 
     await act(async () => {
@@ -334,7 +335,7 @@ describe("mobile app", () => {
     await user.click(screen.getByRole("button", { name: "저장" }));
 
     await waitFor(() =>
-      expect(screen.getByText("저장 실패 — 아래에서 다시 시도")).toBeInTheDocument(),
+      expect(screen.getAllByText("저장 실패 — 아래에서 다시 시도").length).toBeGreaterThan(0),
     );
   });
 

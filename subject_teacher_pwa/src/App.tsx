@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   slotAttendanceToMarks,
   marksToSlotAttendance,
+  studentKey,
   type MarksByStudent,
   type StudentMark,
 } from "./lib/attendance";
@@ -20,7 +21,7 @@ import {
   pendingItems,
   type SaveQueueItem,
 } from "./lib/offlineQueue";
-import type { SlotAttendance, StudentEntry, TimetableSlot } from "./lib/schemas";
+import type { MixedGroups, SlotAttendance, StudentEntry, TimetableSlot } from "./lib/schemas";
 import { sampleRosters, sampleSlots } from "./sampleData";
 import { PrivacyPolicy } from "./PrivacyPolicy";
 import Pairing from "./Pairing";
@@ -33,9 +34,11 @@ export type SaveSlotHandler = (
   date: string,
   slotId: string,
   payload: SlotAttendance,
+  baseline?: SlotAttendance | null,
 ) => Promise<void>;
 
 interface AppProps {
+  mixedGroups?: MixedGroups;
   initialDate?: string;
   /** Timetable slots. Defaults to bundled sample data for tests/offline demo. */
   slots?: TimetableSlot[];
@@ -53,6 +56,9 @@ interface AppProps {
   onSignOut?: () => void;
   /** True when rendering from a cached copy (Drive not yet re-fetched). */
   stale?: boolean;
+  canSync?: boolean;
+  connecting?: boolean;
+  connectionError?: string;
   /** Re-fetch from Drive. Surfaced by the stale badge and after pairing. */
   onRefresh?: () => void;
 }
@@ -65,6 +71,7 @@ function toLocalIsoDate(date = new Date()): string {
 }
 
 function classKey(slot: TimetableSlot): string {
+  if (slot.groupId) return `mixed:${slot.groupId}`;
   return `${slot.grade}-${slot.classNo}`;
 }
 
@@ -130,17 +137,20 @@ function markLabel(mark: StudentMark): string {
 function marksEqual(a: MarksByStudent, b: MarksByStudent): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const key of keys) {
-    const na = Number(key);
+    const na = key;
     if ((a[na] ?? "present") !== (b[na] ?? "present")) return false;
   }
   return true;
 }
 
-function exceptionSummaryFromMarks(marks: MarksByStudent): string {
+function exceptionSummaryFromMarks(marks: MarksByStudent, roster: StudentEntry[] = []): string {
   const parts = Object.entries(marks)
     .filter(([, mark]) => mark !== "present")
     .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([number, mark]) => `${number}번 ${mark === "excused" ? "인정결과" : "결과"}`);
+    .map(([number, mark]) => {
+      const s = roster.find(s => studentKey(s) === number);
+      return `${s?.homeClassNo ? `${s.homeClassNo}반 ` : ""}${s?.number ?? number}번 ${mark === "excused" ? "인정결과" : "결과"}`;
+    });
   return parts.length ? parts.join(", ") : "저장하면 전원 출석";
 }
 
@@ -151,7 +161,7 @@ function formatSavedAt(isoDate: string): string {
 }
 
 const PRIVACY_ACK_KEY = "privacyNoticeAck";
-const LONG_PRESS_MS = 500;
+const DOUBLE_TAP_MS = 350;
 
 function GearIcon() {
   return (
@@ -171,6 +181,7 @@ export default function App({
   initialDate = toLocalIsoDate(),
   slots = sampleSlots,
   rosters = sampleRosters,
+  mixedGroups,
   initialAttendance,
   initialMonth,
   onSaveSlot,
@@ -178,6 +189,9 @@ export default function App({
   onSignOut,
   stale,
   onRefresh,
+  canSync = true,
+  connecting = false,
+  connectionError,
 }: AppProps = {}) {
   const [tab, setTab] = useState<"today" | "record">("today");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -190,6 +204,9 @@ export default function App({
   const [dateSheetOpen, setDateSheetOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => selectedDate.slice(0, 7));
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+  const [homeClassFilter, setHomeClassFilter] = useState<number | null>(null);
+  const [useCurrentRoster, setUseCurrentRoster] = useState(false);
+  const [openedRevision, setOpenedRevision] = useState<number | undefined>();
   const [attendanceByDate, setAttendanceByDate] = useState<AttendanceByDate>(initialAttendance ?? {});
   const [drafts, setDrafts] = useState<Record<string, MarksByStudent>>({});
   const [queue, setQueue] = useState<SaveQueueItem[]>([]);
@@ -251,13 +268,18 @@ export default function App({
   const realTodayValue = toLocalIsoDate();
   const visibleSlots = getLessonsForDate(slots, selectedDate);
   const selectedSlot = slots.find((slot) => slot.id === selectedSlotId) ?? null;
-  const selectedRoster = selectedSlot ? rosters[classKey(selectedSlot)] ?? [] : [];
+  const selectedRecord = selectedSlot ? attendanceByDate[selectedDate]?.[selectedSlot.id] : undefined;
+  const selectedGroup = selectedSlot?.groupId ? mixedGroups?.groups[selectedSlot.groupId] : undefined;
+  const selectedRevision = useCurrentRoster ? openedRevision : selectedRecord?.rosterRevision ?? openedRevision;
+  const selectedRoster = selectedGroup
+    ? (selectedGroup.history[String(selectedRevision)] ?? (selectedRevision === selectedGroup.revision ? selectedGroup.students : [])).map(s => ({...s, name: ""})).sort((a,b) => a.homeClassNo - b.homeClassNo || a.number - b.number)
+    : selectedSlot ? rosters[classKey(selectedSlot)] ?? [] : [];
   const selectedDraftKey = selectedSlot ? `${selectedDate}:${selectedSlot.id}` : "";
   const selectedBaseline = selectedSlot
     ? slotAttendanceToMarks(selectedRoster, attendanceByDate[selectedDate]?.[selectedSlot.id])
     : {};
   const selectedDraft = selectedSlot ? drafts[selectedDraftKey] ?? selectedBaseline : {};
-  const draftSummary = selectedSlot ? exceptionSummaryFromMarks(selectedDraft) : "";
+  const draftSummary = selectedSlot ? exceptionSummaryFromMarks(selectedDraft, selectedRoster) : "";
   const attendanceForDate = attendanceByDate[selectedDate] ?? {};
 
   const counts = useMemo(() => {
@@ -287,7 +309,12 @@ export default function App({
   }, [tab, selectedDate]);
 
   const openLesson = (slot: TimetableSlot) => {
-    const roster = rosters[classKey(slot)] ?? [];
+    setHomeClassFilter(null);
+    setUseCurrentRoster(false);
+    const group = slot.groupId ? mixedGroups?.groups[slot.groupId] : undefined;
+    const savedRevision = attendanceByDate[selectedDate]?.[slot.id]?.rosterRevision;
+    setOpenedRevision(savedRevision ?? group?.revision);
+    const roster = group ? (group.history[String(savedRevision ?? group.revision)] ?? (savedRevision === undefined || savedRevision === group.revision ? group.students : [])).map(s => ({...s, name: ""})) : rosters[classKey(slot)] ?? [];
     const draftKey = `${selectedDate}:${slot.id}`;
     // Seed from the synced record (not all-present) so marks checked on the
     // desktop show up here — and saving doesn't wipe them back to present.
@@ -299,7 +326,7 @@ export default function App({
     setSelectedSlotId(slot.id);
   };
 
-  const setMark = (studentNumber: number, next: StudentMark) => {
+  const setMark = (studentNumber: string, next: StudentMark) => {
     if (!selectedSlot) return;
     setDrafts((current) => {
       const draft = current[selectedDraftKey] ?? selectedBaseline;
@@ -309,39 +336,27 @@ export default function App({
       };
     });
   };
-  // Single tap toggles 출석 ↔ 결과; long-press toggles 인정결과.
-  const tapStudent = (studentNumber: number) => {
-    const mark = selectedDraft[studentNumber] ?? "present";
-    setMark(studentNumber, mark === "absent" ? "present" : "absent");
-  };
-  const longPressStudent = (studentNumber: number) => {
-    const mark = selectedDraft[studentNumber] ?? "present";
-    setMark(studentNumber, mark === "excused" ? "present" : "excused");
-  };
-  const pressTimer = useRef<number | null>(null);
-  const longPressFired = useRef(false);
-  const startPress = (studentNumber: number) => {
-    longPressFired.current = false;
-    if (pressTimer.current) window.clearTimeout(pressTimer.current);
-    pressTimer.current = window.setTimeout(() => {
-      longPressFired.current = true;
-      longPressStudent(studentNumber);
-    }, LONG_PRESS_MS);
-  };
-  const endPress = () => {
-    if (pressTimer.current) window.clearTimeout(pressTimer.current);
-  };
-  const clickStudent = (studentNumber: number) => {
-    if (longPressFired.current) {
-      longPressFired.current = false;
-      return; // the long-press already applied 인정결과
+  const lastTap = useRef<{ key: string; number: string; at: number } | null>(null);
+  useEffect(() => { lastTap.current = null; }, [selectedDraftKey]);
+  const clickStudent = (studentNumber: string) => {
+    const now = Date.now();
+    const previous = lastTap.current;
+    if (previous?.key === selectedDraftKey && previous.number === studentNumber && now - previous.at <= DOUBLE_TAP_MS) {
+      setMark(studentNumber, "excused");
+      lastTap.current = null;
+    } else {
+      const mark = selectedDraft[studentNumber] ?? "present";
+      setMark(studentNumber, mark === "present" ? "absent" : "present");
+      lastTap.current = { key: selectedDraftKey, number: studentNumber, at: now };
     }
-    tapStudent(studentNumber);
   };
 
   // Mirror the latest queue so flush callbacks read fresh data without being
   // re-created (and re-triggering effects) on every queue change.
   const queueRef = useRef(queue);
+  const [conflictReview, setConflictReview] = useState<{
+    item: SaveQueueItem; latest: SlotAttendance | null;
+  } | null>(null);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
@@ -350,13 +365,14 @@ export default function App({
 
   // Upload one enqueued save to Drive and resolve its queue status. Identified
   // by date+slot rather than id because enqueueSave dedupes pending items.
-  const flushSave = async (date: string, slotId: string, payload: SlotAttendance) => {
-    if (!onSaveSlot) return;
+  const flushSave = async (date: string, slotId: string, payload: SlotAttendance, baseline?: SlotAttendance | null) => {
+    if (!onSaveSlot || !canSync) return;
     try {
-      await onSaveSlot(date, slotId, payload);
-      setQueue((current) => markStatusByTarget(current, date, slotId, "synced"));
-    } catch {
-      setQueue((current) => markStatusByTarget(current, date, slotId, "failed"));
+      await onSaveSlot(date, slotId, payload, baseline);
+      setQueue((current) => markStatusByTarget(current, date, slotId, "synced", payload.checkedAt));
+    } catch (error) {
+      setQueue((current) => markStatusByTarget(current, date, slotId, "failed", payload.checkedAt,
+        error instanceof Error ? error.message : "저장 실패"));
     }
   };
 
@@ -364,25 +380,27 @@ export default function App({
   // the manual retry button. Guarded so overlapping triggers don't double-run;
   // saves are idempotent so a rare duplicate upload is harmless.
   const flushAll = useCallback(async () => {
-    if (!onSaveSlot || flushingRef.current) return;
+    if (!onSaveSlot || !canSync || !navigator.onLine || flushingRef.current) return;
     flushingRef.current = true;
     try {
       for (const item of queueRef.current.filter((entry) => entry.status !== "synced")) {
         try {
-          await onSaveSlot(item.date, item.slotId, item.payload);
-          setQueue((current) => markStatusByTarget(current, item.date, item.slotId, "synced"));
-        } catch {
-          setQueue((current) => markStatusByTarget(current, item.date, item.slotId, "failed"));
+          await onSaveSlot(item.date, item.slotId, item.payload, item.baseline);
+          setQueue((current) => markStatusByTarget(current, item.date, item.slotId, "synced", item.payload.checkedAt));
+        } catch (error) {
+          setQueue((current) => markStatusByTarget(current, item.date, item.slotId, "failed", item.payload.checkedAt,
+            error instanceof Error ? error.message : "저장 실패"));
         }
       }
     } finally {
       flushingRef.current = false;
     }
-  }, [onSaveSlot]);
+  }, [onSaveSlot, canSync]);
 
   const flushAllRef = useRef(flushAll);
   useEffect(() => {
     flushAllRef.current = flushAll;
+    if (hydratedRef.current) void flushAll();
   }, [flushAll]);
 
   // Restore the persisted queue on startup, overlay its payloads onto the view,
@@ -393,6 +411,7 @@ export default function App({
       .then((items) => {
         if (cancelled) return;
         if (items.length) {
+          queueRef.current = items;
           setQueue(items);
           setAttendanceByDate((current) => {
             const next = { ...current };
@@ -470,36 +489,84 @@ export default function App({
 
   // Persist locally, enqueue, and reconcile the toast to the real Drive result.
   const commitSlot = (date: string, slotId: string, saved: SlotAttendance) => {
+    // Carry the edit's original remote baseline through offline restarts.
+    const previous = queueRef.current.find(item => item.date === date && item.slotId === slotId && item.status !== "synced");
+    const baseline = previous ? previous.baseline : attendanceByDate[date]?.[slotId] ?? null;
     setAttendanceByDate((current) => ({
       ...current,
       [date]: { ...(current[date] ?? {}), [slotId]: saved },
     }));
-    setQueue((current) => enqueueSave(current, { date, slotId, payload: saved }));
+    setQueue((current) => enqueueSave(current, { date, slotId, payload: saved, baseline }));
 
-    if (onSaveSlot && isOnline) {
-      const id = showToast("기기에 저장됨 · Drive 반영 중…", true);
-      onSaveSlot(date, slotId, saved)
+    if (onSaveSlot && !canSync) {
+      showToast("기기 저장 완료 · Google 연결 필요");
+    } else if (onSaveSlot && isOnline) {
+      const id = showToast("기기 저장 완료 · 동기화 중", true);
+      onSaveSlot(date, slotId, saved, baseline)
         .then(() => {
-          setQueue((current) => markStatusByTarget(current, date, slotId, "synced"));
+          setQueue((current) => markStatusByTarget(current, date, slotId, "synced", saved.checkedAt));
           resolveToast(id, "저장 완료");
         })
-        .catch(() => {
-          setQueue((current) => markStatusByTarget(current, date, slotId, "failed"));
-          resolveToast(id, "저장 실패 — 아래에서 다시 시도");
+        .catch((error) => {
+          const message = error instanceof Error && error.name === "DriveConflictError"
+            ? error.message : error instanceof Error && error.name === "AuthRequiredError"
+              ? "기기 저장 완료 · Google 연결 필요" : "저장 실패 — 아래에서 다시 시도";
+          setQueue((current) => markStatusByTarget(current, date, slotId, "failed", saved.checkedAt, message));
+          resolveToast(id, message);
         });
     } else if (onSaveSlot && !isOnline) {
       showToast("기기에 저장됨 · 연결되면 자동 반영");
-      void flushSave(date, slotId, saved);
+
     } else {
       showToast("기기에 저장됨");
     }
   };
 
+  const compareFailed = async (item: SaveQueueItem) => {
+    if (!onLoadMonth) return;
+    try {
+      const records = await onLoadMonth(item.date.slice(0, 7));
+      setConflictReview({ item, latest: records[item.date]?.[item.slotId] ?? null });
+    } catch {
+      showToast("최신 기록을 불러오지 못했습니다. 연결 상태를 확인해 주세요.");
+    }
+  };
+  const acceptLatest = () => {
+    if (!conflictReview) return;
+    const { item, latest } = conflictReview;
+    setAttendanceByDate(current => {
+      const day = { ...(current[item.date] ?? {}) };
+      if (latest) day[item.slotId] = latest;
+      else delete day[item.slotId];
+      return { ...current, [item.date]: day };
+    });
+    setQueue(current => current.filter(entry => !(entry.date === item.date && entry.slotId === item.slotId)));
+    setConflictReview(null);
+  };
+  const keepLocal = () => {
+    if (!conflictReview) return;
+    const { item, latest } = conflictReview;
+    const payload = { ...item.payload, checkedAt: new Date().toISOString(), syncedToNeis: false, closedOnNeis: false };
+    setQueue(current => enqueueSave(current, { date: item.date, slotId: item.slotId, payload, baseline: latest }));
+    setAttendanceByDate(current => ({ ...current, [item.date]: { ...(current[item.date] ?? {}), [item.slotId]: payload } }));
+    setConflictReview(null);
+    void flushSave(item.date, item.slotId, payload, latest);
+  };
+  const describeAttendance = (record: SlotAttendance | null) => !record ? "미확인" :
+    record.absences.length === 0 ? "전원 출석" : record.absences.map(a => {
+      const g = record.groupId ? mixedGroups?.groups[record.groupId] : undefined;
+      const s = (g?.history[String(record.rosterRevision)] ?? (g?.revision === record.rosterRevision ? g?.students : []))?.find(s => s.studentId === a.studentId);
+      return `${s ? `${s.homeClassNo}반 ${s.number}번` : a.studentNumber !== undefined ? `${a.studentNumber}번` : "명부 확인 필요"} ${a.markType === "excused" ? "인정결과" : "결과"}`;
+    }).join(", ");
+
   const saveLesson = () => {
     if (!selectedSlot) return;
+    if (selectedSlot.groupId && (!selectedGroup || selectedRevision !== selectedGroup.revision)) {
+      showToast("명부가 변경되었습니다. 최신 명부로 다시 확인해 주세요."); return;
+    }
     const date = selectedDate;
     const slotId = selectedSlot.id;
-    const saved = marksToSlotAttendance(selectedDraft, new Date().toISOString());
+    const saved = marksToSlotAttendance(selectedDraft, new Date().toISOString(), selectedGroup ? {groupId: selectedGroup.id, rosterRevision: selectedGroup.revision} : undefined);
     commitSlot(date, slotId, saved);
     setDrafts((current) => {
       const next = { ...current };
@@ -512,9 +579,11 @@ export default function App({
   const saveAllPresent = (slot: TimetableSlot) => {
     const roster = rosters[classKey(slot)] ?? [];
     const marks: MarksByStudent = Object.fromEntries(
-      roster.map((student) => [student.number, "present" as StudentMark]),
+      roster.map((student) => [studentKey(student), "present" as StudentMark]),
     );
-    const saved = marksToSlotAttendance(marks, new Date().toISOString());
+    const group = slot.groupId ? mixedGroups?.groups[slot.groupId] : undefined;
+    if (slot.groupId && !group) { showToast("혼합수업 명부를 불러와 주세요."); return; }
+    const saved = marksToSlotAttendance(marks, new Date().toISOString(), group ? {groupId: group.id, rosterRevision: group.revision} : undefined);
     commitSlot(selectedDate, slot.id, saved);
   };
 
@@ -600,6 +669,7 @@ export default function App({
                   </strong>
                   {/* Unchecked cards already say 미확인 in the status chip — skip the duplicate detail line. */}
                   {summary.checked && <small>{summary.compactLabel}</small>}
+                  {saved?.groupId && <small>{describeAttendance(saved)}</small>}
                   {saved && <small className="saved-at">{formatSavedAt(saved.checkedAt)}</small>}
                   {saved && (
                     <span className="meta-row">
@@ -683,6 +753,14 @@ export default function App({
             </div>
           </button>
 
+          {onRefresh && (!canSync || connectionError) && (
+            <div className="status-banner offline" role="status">
+              <span>{connectionError || "Google 연결이 만료되었습니다. 입력은 기기에 보관됩니다."}</span>
+              <button type="button" onClick={onRefresh} disabled={connecting}>
+                {connecting ? "연결 중…" : "Google 다시 연결"}
+              </button>
+            </div>
+          )}
           {!isOnline && (
             <div className="status-banner offline" role="status">
               인터넷에 연결되어 있지 않아요. 저장은 기기에 보관되고, 연결되면 자동으로 반영됩니다.
@@ -691,10 +769,25 @@ export default function App({
           {onSaveSlot && counts.failed > 0 && (
             <div className="status-banner failed" role="alert">
               <span>저장 실패 {counts.failed}건이 있어요.</span>
+              <span>{queue.find(item => item.status === "failed" && item.error)?.error}</span>
               <button type="button" onClick={retryFailed}>다시 시도</button>
+              {onLoadMonth && failedItems(queue).map(item => (
+                <button type="button" key={item.id} onClick={() => void compareFailed(item)}>
+                  {item.date} · {item.slotId} 최신 기록과 비교
+                </button>
+              ))}
             </div>
           )}
 
+          {conflictReview && (
+            <section className="status-banner failed" role="dialog" aria-label="동시 수정 확인">
+              <div>기기에 보관한 기록: {describeAttendance(conflictReview.item.payload)}</div>
+              <div>Drive 최신 기록: {describeAttendance(conflictReview.latest)}</div>
+              <button type="button" onClick={acceptLatest}>최신 기록 사용</button>
+              <button type="button" onClick={keepLocal}>내 기록으로 다시 저장</button>
+              <button type="button" onClick={() => setConflictReview(null)}>닫기</button>
+            </section>
+          )}
           <main>{renderLessonList(selectedDate, true)}</main>
         </>
       )}
@@ -791,9 +884,9 @@ export default function App({
             </section>
             <section className="info-card">
               <strong>개인정보</strong>
-              <p>학생 이름은 저장하지 않습니다. 학번·출결만 본인 Google Drive에 저장되며,
-                암호화를 켜면 구글도 내용을 읽을 수 없습니다.</p>
-              <button className="policy-link" type="button" onClick={() => setShowPrivacy(true)}>개인정보처리방침 전문 보기</button>
+              <p>학생 이름은 Drive에 보내지 않습니다. 학번·출결 등은 본인 Google Drive에 저장하며,
+                연결 암호화를 사용하면 기기에서 암호화한 뒤 전송합니다.</p>
+              <button className="policy-link" type="button" onClick={() => setShowPrivacy(true)}>개인정보처리방침 · 이용 안내</button>
             </section>
             <section className="info-card">
               <strong>시간표</strong>
@@ -805,7 +898,7 @@ export default function App({
             <section className="info-card">
               <strong>학생 명부</strong>
               {Object.entries(rosters).map(([key, roster]) => (
-                <p key={key}>{key} · {roster.length}명</p>
+                <p key={key}>{key.startsWith("mixed:") ? (() => { const g = mixedGroups?.groups[key.slice(6)]; return g ? `${g.grade}학년 ${g.classNo} · ${g.subjectName}` : "혼합수업"; })() : key} · {roster.length}명</p>
               ))}
             </section>
             <section className="info-card">
@@ -871,7 +964,7 @@ export default function App({
             <div className="grabber" />
             <div className="sheet-head">
               <div>
-                <p className="muted">{selectedSlot.period}교시 · {classKey(selectedSlot)}</p>
+                <p className="muted">{selectedSlot.period}교시 · {selectedSlot.grade}학년 {selectedSlot.classNo}</p>
                 <h2>{selectedSlot.grade}-{selectedSlot.classNo} {selectedSlot.subjectName}</h2>
               </div>
               <button className="icon-btn" type="button" onClick={() => closeLesson()} aria-label="닫기">×</button>
@@ -881,30 +974,38 @@ export default function App({
               <span><i className="dot present" />출석</span>
               <span><i className="dot absent" />결과</span>
               <span><i className="dot excused" />인정결과</span>
-              <span className="legend-hint">한 번 눌러 결과 · 길게 눌러 인정결과</span>
+              <span className="legend-hint">한 번 눌러 결과 · 두 번 연속 눌러 인정결과</span>
             </div>
 
+            {selectedSlot.groupId && <div className="quick-dates" aria-label="원소속 반 필터">
+              {[null, ...Array.from(new Set(selectedRoster.map(s => s.homeClassNo!)))].map(c => <button key={c ?? "all"} type="button" aria-pressed={homeClassFilter === c} onClick={() => setHomeClassFilter(c)}>{c === null ? "전체" : `${c}반`}</button>)}
+            </div>}
+            {selectedSlot.groupId && selectedRevision !== selectedGroup?.revision && <div role="alert">
+              이전 명부의 기록입니다. 저장하려면 최신 명부에서 다시 확인해 주세요.
+              <button type="button" onClick={() => { setUseCurrentRoster(true); setOpenedRevision(selectedGroup?.revision); setDrafts(current => {const next = {...current}; delete next[selectedDraftKey]; return next;}); }}>최신 명부로 다시 확인</button>
+            </div>}
             <div className="chip-grid">
-              {selectedRoster.map((student) => {
-                const mark = selectedDraft[student.number] ?? "present";
+              {selectedRoster.filter(s => homeClassFilter === null || s.homeClassNo === homeClassFilter).map((student, index, visible) => {
+                const key = studentKey(student);
+                const mark = selectedDraft[key] ?? "present";
                 return (
+                  <Fragment key={key}>
+                  {student.homeClassNo && (index === 0 || visible[index - 1].homeClassNo !== student.homeClassNo) && <strong style={{gridColumn: "1 / -1"}}>{student.homeClassNo}반</strong>}
                   <button
-                    key={student.number}
+                    key={key}
                     className="chip"
                     data-mark={mark}
                     type="button"
                     aria-pressed={mark !== "present"}
-                    aria-label={`${student.number}번 ${student.name ? `${student.name} ` : ""}${markLabel(mark)}`}
-                    onPointerDown={() => startPress(student.number)}
-                    onPointerUp={endPress}
-                    onPointerLeave={endPress}
-                    onPointerCancel={endPress}
+                    aria-label={`${student.homeClassNo ? `${student.homeClassNo}반 ` : ""}${student.number}번 ${!student.studentId && student.name ? `${student.name} ` : ""}${markLabel(mark)}`}
                     onContextMenu={(event) => event.preventDefault()}
-                    onClick={() => clickStudent(student.number)}
+                    onClick={() => clickStudent(key)}
                   >
                     <span className="chip-no">{student.number}</span>
-                    {student.name && <span className="chip-name">{student.name}</span>}
+                    {student.homeClassNo && <span className="chip-name">{student.homeClassNo}반</span>}
+                    {!student.studentId && student.name && <span className="chip-name">{student.name}</span>}
                   </button>
+                  </Fragment>
                 );
               })}
             </div>

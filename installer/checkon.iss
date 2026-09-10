@@ -11,7 +11,7 @@
 #define AppName "체크온"
 #define AppNameEn "CheckOn"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.9"
 #endif
 #define AppPublisher "체크온"
 #define AppExeName "NEIS_Subject_Teacher.exe"

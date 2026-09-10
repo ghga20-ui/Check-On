@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import sys
 
-from subject_teacher.gui.webview_app import start
-
 
 def _enable_per_monitor_v2_dpi() -> None:
     """Opt into Per-Monitor-V2 DPI awareness before the window is created (Windows only).
@@ -27,8 +25,15 @@ def _enable_per_monitor_v2_dpi() -> None:
 
 
 def main() -> None:
-    _enable_per_monitor_v2_dpi()
-    start()
+    from subject_teacher.gui import startup
+    startup.configure()
+    try:
+        from subject_teacher.gui.webview_app import start
+        _enable_per_monitor_v2_dpi()
+        start()
+    except Exception as exc:
+        startup.report_failure(exc)
+        raise
 
 
 if __name__ == "__main__":

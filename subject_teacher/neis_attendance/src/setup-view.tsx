@@ -395,7 +395,7 @@ export const SyncEncryptionCard = ({ api }: { api?: DesktopApi }) => {
   );
 };
 
-export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey, setNeisApiKey, saveNeisApiKey, appendLog, loadSetupData, saveSettings, saveTimetable, previewNeisPublicTimetable, findNeisSubjectCandidates, publishNeisTimetableForMobile }) => {
+export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey, setNeisApiKey, saveNeisApiKey, appendLog, loadSetupData, saveSettings, saveTimetable, previewNeisPublicTimetable, findNeisSubjectCandidates, publishNeisTimetableForMobile, mixedPanel = null as React.ReactNode }) => {
   const [selected, setSelected] = useState<any>(new Set());
   const [day, setDay] = useState<any>("전체");
   const [subjectLookup, setSubjectLookup] = useState<any>({ index: null, loading: false, error: "", lessons: [] });
@@ -513,6 +513,7 @@ export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey
             options={[{value:"manual",label:"직접 입력"},{value:"neis",label:"NEIS 실시간 조회"}]}/>
         </div>
 
+        {mixedPanel}
         {isNeisMode && (
           <div className="card card-pad neis-mode-card">
             <div className="section-head" style={{marginBottom:12}}>
@@ -640,7 +641,7 @@ export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey
   );
 };
 
-export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, saveRosters, importRosterFile }) => {
+export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, saveRosters, importRosterFile, mixedPanel = null as React.ReactNode }) => {
   const keys = Object.keys(rosters);
   const [klass, setKlass] = useState<any>(keys[0]);
   const [paste, setPaste] = useState<any>("");
@@ -695,10 +696,12 @@ export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, save
         <div className="page-hero">
           <div>
             <h1>학생 명부</h1>
-            <div className="subtitle">학급 목록은 시간표의 학년-반과 자동으로 맞춰집니다.</div>
+            <div className="subtitle">한 반 수업의 학급 목록은 시간표의 학년-반과 자동으로 맞춰집니다. 혼합수업 명부는 아래 전용 화면에서 관리합니다.</div>
           </div>
           <PillTabs value={klass} onChange={setKlass} options={keys.map(k => ({value:k, label:k}))}/>
         </div>
+
+        {mixedPanel}
 
         <div className="card card-pad" style={{marginBottom:16}}>
           <div style={{display:"flex",gap:14,alignItems:"flex-start"}}>

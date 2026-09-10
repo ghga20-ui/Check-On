@@ -5,6 +5,9 @@ const ok = (value: unknown): Promise<string> => Promise.resolve(JSON.stringify(v
 
 export function createMockApi(): DesktopApi {
   return {
+    get_mixed_groups: () => ok({ ok: true, document: { schemaVersion: 1, revision: 0, groups: {} }, encryptionEnabled: false }),
+    save_mixed_group: () => ok({ error: "미리보기에서는 혼합수업을 저장할 수 없습니다." }),
+    import_mixed_students_file: () => ok({ cancelled: true }),
     get_settings: () =>
       ok({
         schemaVersion: 1,

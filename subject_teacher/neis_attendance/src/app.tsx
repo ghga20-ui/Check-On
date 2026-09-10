@@ -2,6 +2,7 @@ import React from "react";
 import { BrandMark, Icon } from "./components";
 import { LogDock } from "./log-panel";
 import { RunView } from "./run-view";
+import { MixedClassPanel, emptyMixedDocument, matchesMixedGroup, type MixedDocument, type MixedGroup } from "./mixed-class";
 import { BasicsView, TimetableView, RosterView, PlaceholderView, ConnectionView } from "./setup-view";
 import { OnboardingGuide } from "./onboarding";
 import { PrivacyPolicy } from "./privacy-policy";
@@ -45,6 +46,8 @@ function App() {
   const [slots, setSlots] = useState<any>(TODAY_SLOTS);
   const [timetable, setTimetable] = useState<any>(TIMETABLE);
   const [rosters, setRosters] = useState<any>(ROSTERS);
+  const [mixedDocument, setMixedDocument] = useState<MixedDocument>(emptyMixedDocument);
+  const [mixedEncryption, setMixedEncryption] = useState(false);
   const [date, setDate] = useState<any>(todayIso());
   const [password, setPassword] = useState<any>("");
   const [closeAfter, setCloseAfter] = useState<any>(false);
@@ -76,9 +79,11 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [reconnecting, setReconnecting] = useState<any>(false);
   const mobileTimetableSyncRef = useRef(new Set());
+  const legacyTimetable = timetable.filter(lesson => !Object.values(mixedDocument.groups).some(group => matchesMixedGroup(group, lesson)));
+  const legacyAssignedLessons = (settings.assignedLessons || []).filter(lesson => !Object.values(mixedDocument.groups).some(group => matchesMixedGroup(group, lesson)));
   const rosterKeySignature = useMemo(
-    () => rosterKeysFromTimetable(timetable, settings.assignedLessons).join("\t"),
-    [timetable, JSON.stringify(settings.assignedLessons || [])],
+    () => rosterKeysFromTimetable(legacyTimetable, legacyAssignedLessons).join("\t"),
+    [timetable, JSON.stringify(settings.assignedLessons || []), mixedDocument],
   );
 
   // Visible feedback for menu actions. The log dock is hidden by default, so
@@ -135,6 +140,38 @@ function App() {
     return run(1).finally(() => setSlotLoading(false));
   };
 
+  const loadMixedGroups = async () => {
+    if (!window.pywebview?.api) return;
+    setMixedEncryption(false);
+    const data = parseJsonResult(await window.pywebview.api.get_mixed_groups());
+    if (data.document?.schemaVersion !== 1) throw new Error("혼합수업 형식을 지원하지 않습니다. 체크온을 업데이트해 주세요.");
+    setMixedDocument(data.document); setMixedEncryption(!!data.encryptionEnabled);
+    return data.document as MixedDocument;
+  };
+  const saveMixedGroup = async (payload) => {
+    if (!window.pywebview?.api) throw new Error("데스크톱 앱에서 암호화를 연결한 후 저장해 주세요.");
+    const data = parseJsonResult(await window.pywebview.api.save_mixed_group(JSON.stringify(payload)));
+    setMixedDocument(data.document);
+    await refreshSlots(toIsoDate(date));
+    appendLog("완료", "혼합수업 명부 저장 완료");
+    return data;
+  };
+  const importMixedStudents = async (grade) => {
+    if (!window.pywebview?.api) return { cancelled: true };
+    return parseJsonResult(await window.pywebview.api.import_mixed_students_file(grade));
+  };
+  const bindMixedGroup = (group: MixedGroup) => {
+    if ((settings.timetableMode || "neis") === "neis") {
+      if (!(settings.assignedLessons || []).some(lesson => matchesMixedGroup(group, lesson))) {
+        setSettings(prev => ({ ...prev, assignedLessons: [...(prev.assignedLessons || []), { grade: group.grade, classNo: group.classNo, subjectName: group.subjectName, neisSubjectLabel: group.neisSubjectLabel || group.subjectName, subjectAliases: [] }] }));
+      }
+    } else {
+      setTimetable(prev => [...prev, { day: "월", period: 1, grade: group.grade, classNo: group.classNo, subject: group.subjectName, neis: group.neisSubjectLabel || group.subjectName }]);
+    }
+    setPage("timetable");
+    appendLog("완료", "수업을 추가했습니다. 요일·교시를 확인하고 시간표 또는 담당 수업 저장을 눌러 주세요.");
+  };
+
   const loadSetupData = () => {
     if (!(window.__isPywebview && window.__isPywebview())) {
       appendLog("안내", "브라우저 미리보기에서는 샘플 설정을 사용합니다");
@@ -162,12 +199,12 @@ function App() {
       setTimetable(loadedTimetable);
       setRosters(syncRostersToTimetable(loadedRosters, loadedTimetable, loadedSettings.assignedLessons));
       appendLog("완료", `설정 불러오기 완료 · ${loadedUser.emailAddress || "계정 미확인"} · 수업 ${loadedTimetable.length}개`);
-      return refreshSlots(toIsoDate(date));
+      return loadMixedGroups().then(() => refreshSlots(toIsoDate(date)));
     }).catch(err => appendLog("오류", `설정 불러오기 실패: ${formatApiError(err)}`));
   };
 
   useEffect(() => {
-    setRosters(prev => syncRostersToTimetable(prev, timetable, settings.assignedLessons));
+    setRosters(prev => syncRostersToTimetable(prev, legacyTimetable, legacyAssignedLessons));
   }, [rosterKeySignature]);
 
   const saveSettings = (successMessage = "기본 정보 저장됨") => {
@@ -317,7 +354,7 @@ function App() {
       appendLog("완료", "학생 명부 저장됨 (미리보기)");
       return;
     }
-    window.pywebview!.api.save_students_tsv(rostersToTsv(syncRostersToTimetable(rosters, timetable, settings.assignedLessons)))
+    window.pywebview!.api.save_students_tsv(rostersToTsv(syncRostersToTimetable(rosters, legacyTimetable, legacyAssignedLessons)))
       .then(raw => {
         parseJsonResult(raw);
         appendLog("완료", "학생 명부 저장됨");
@@ -344,12 +381,14 @@ function App() {
       .catch(err => appendLog("오류", `명부 파일 가져오기 실패: ${formatApiError(err)}`));
   };
 
-  const saveSlotAttendance = (slotId, marks) => {
+  const saveSlotAttendance = (slotId, marks, snapshot = null as any) => {
     if (!(window.__isPywebview && window.__isPywebview())) {
       appendLog("완료", "attendance 저장 완료 (미리보기)");
       return Promise.resolve({ ok: true, checkedAt: new Date().toISOString() });
     }
-    return window.pywebview!.api.save_slot_attendance(toIsoDate(date), slotId, JSON.stringify(marks))
+    const slot = snapshot || slots.find(s => s.id === slotId);
+    const expectedCheckedAt = slot?.checkedAt ?? "";
+    return window.pywebview!.api.save_slot_attendance(toIsoDate(date), slotId, JSON.stringify(marks), expectedCheckedAt, slot?.groupId ?? null, slot?.rosterRevision ?? null)
       .then(raw => {
         const data = parseJsonResult(raw);
         appendLog("완료", "출결 저장됨");
@@ -482,6 +521,7 @@ function App() {
   const sidebarName = driveUser?.displayName || driveUser?.emailAddress || "교과 담당교사";
   const sidebarInitial = sidebarName.trim().slice(0, 1) || "교";
 
+  const mixedPanel = <MixedClassPanel document={mixedDocument} encryptionEnabled={mixedEncryption} onSave={saveMixedGroup} onImport={importMixedStudents} onRefresh={loadMixedGroups} onBind={bindMixedGroup}/>;
   return (
     <div className="app">
       <aside className="sidebar">
@@ -526,7 +566,7 @@ function App() {
         ))}
 
         <button className="sb-loglink" onClick={() => setShowOnboarding(true)}>시작 가이드</button>
-        <button className="sb-loglink" onClick={() => setShowPrivacy(true)}>개인정보처리방침</button>
+        <button className="sb-loglink" onClick={() => setShowPrivacy(true)}>개인정보 · 이용 안내</button>
         <button className="sb-loglink" onClick={() => setLogOpen(o => !o)}>진행 기록</button>
         <button className="sb-loglink" onClick={loadSetupData}>설정 다시 불러오기</button>
 
@@ -545,8 +585,8 @@ function App() {
       <main className="main">
         {page === "run"       && <RunView {...{date,setDate,password,setPassword,savePassword,closeAfter,setCloseAfter,slots,setSlots,rosters,running,progress,runLog:logLines,startRun,saveSlotAttendance,deleteSlotAttendance,appendLog,refreshSlots,publishNeisTimetableForMobile,slotLoading,slotError}}/>}
         {page === "basics"    && <BasicsView settings={settings} setSettings={setSettings} driveUser={driveUser} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} searchSchools={searchSchools}/>}
-        {page === "timetable" && <TimetableView rows={timetable} setRows={setTimetable} settings={settings} setSettings={setSettings} neisApiKey={neisApiKey} setNeisApiKey={setNeisApiKey} saveNeisApiKey={saveNeisApiKey} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} saveTimetable={saveTimetable} previewNeisPublicTimetable={previewNeisPublicTimetable} findNeisSubjectCandidates={findNeisSubjectCandidates} publishNeisTimetableForMobile={publishNeisTimetableForMobile}/>}
-        {page === "roster"    && <RosterView rosters={rosters} setRosters={setRosters} appendLog={appendLog} loadSetupData={loadSetupData} saveRosters={saveRosters} importRosterFile={importRosterFile}/>}
+        {page === "timetable" && <TimetableView mixedPanel={mixedPanel} rows={timetable} setRows={setTimetable} settings={settings} setSettings={setSettings} neisApiKey={neisApiKey} setNeisApiKey={setNeisApiKey} saveNeisApiKey={saveNeisApiKey} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} saveTimetable={saveTimetable} previewNeisPublicTimetable={previewNeisPublicTimetable} findNeisSubjectCandidates={findNeisSubjectCandidates} publishNeisTimetableForMobile={publishNeisTimetableForMobile}/>}
+        {page === "roster"    && <RosterView mixedPanel={mixedPanel} rosters={rosters} setRosters={setRosters} appendLog={appendLog} loadSetupData={loadSetupData} saveRosters={saveRosters} importRosterFile={importRosterFile}/>}
         {page === "connect"   && <ConnectionView driveUser={driveUser} reconnect={reconnect} reconnecting={reconnecting} loadSetupData={loadSetupData}/>}
       </main>
 
