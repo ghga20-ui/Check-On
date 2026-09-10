@@ -12,7 +12,7 @@ for (const [source, route, title] of documents) {
  const md = `# 체크온 ${title}\n\n최종 개정: ${doc.updated}\n\n` + doc.sections.map(([t,b],i)=>`## ${i+1}. ${t}\n\n${b}\n`).join('\n');
  for (const [path, value] of [[`../public/${route}.html`,html],[`../../docs/legal/${source}.md`,md]]) {
   const url = new URL(path, import.meta.url);
-  if(process.argv.includes('--check')) { if(readFileSync(url,'utf8')!==value) throw new Error('안내가 원본과 다릅니다: '+path); }
+  if(process.argv.includes('--check')) { if(readFileSync(url,'utf8').replaceAll('\r\n', '\n')!==value.replaceAll('\r\n', '\n')) throw new Error('안내가 원본과 다릅니다: '+path); }
   else writeFileSync(url,value);
  }
 }
