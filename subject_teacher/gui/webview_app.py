@@ -38,7 +38,10 @@ def _html_url() -> str:
             "Desktop UI is not built. Run:\n"
             "  cd subject_teacher/neis_attendance && npm install && npm run build"
         )
-    return dist_index.resolve().as_uri()
+    # A plain path (not file://) so webview.start(http_server=True) serves it over
+    # localhost. WebView2 intermittently never runs the Vite module script from
+    # file://, leaving a blank window.
+    return str(dist_index.resolve())
 
 
 def start() -> None:
@@ -80,9 +83,9 @@ def start() -> None:
     try:
         if icon_path.exists():
             # GTK/QT path; ignored on Windows (handled via the shown event above).
-            webview.start(debug=False, icon=str(icon_path))
+            webview.start(debug=False, http_server=True, icon=str(icon_path))
         else:
-            webview.start(debug=False)
+            webview.start(debug=False, http_server=True)
     except TypeError:
         # Older pywebview without the `icon` parameter.
-        webview.start(debug=False)
+        webview.start(debug=False, http_server=True)

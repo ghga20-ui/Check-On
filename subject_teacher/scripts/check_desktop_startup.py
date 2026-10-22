@@ -38,7 +38,8 @@ def main() -> None:
             if not result["ok"]:
                 raise SystemExit(1)
             try:
-                proc.wait(timeout=10)
+                # pythonnet unloads the CLR at exit, which alone can take ~10s.
+                proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 raise SystemExit("창 종료 실패")
             if proc.returncode != 0:
