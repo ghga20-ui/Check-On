@@ -820,7 +820,7 @@ h1, h2, h3, h4 { margin: 0; font-family: var(--font-disp); letter-spacing: -0.01
   font-family: var(--font-mono);
   font-size: 12px; line-height: 1.55;
 }
-.log-body .line { display: grid; grid-template-columns: 80px 56px 1fr; gap: 10px; padding: 1px 0; }
+.log-body .line { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; padding: 4px 0; align-items: start; }
 .log-body .ts { color: var(--fg-3); }
 .log-body .lv { font-weight: 600; font-size: 10px; padding: 1px 7px; border-radius: 4px; text-align: center; align-self: center; justify-self: start; letter-spacing: .04em; }
 /* Korean log level labels: 안내/완료/주의/오류 */
@@ -828,7 +828,7 @@ h1, h2, h3, h4 { margin: 0; font-family: var(--font-disp); letter-spacing: -0.01
 .log-body .lv.완료 { background: rgba(48,209,88,.14); color: var(--ok-ink); }
 .log-body .lv.주의 { background: rgba(255,159,10,.18); color: var(--warn-ink); }
 .log-body .lv.오류 { background: rgba(255,69,58,.15); color: var(--bad-ink); }
-.log-body .msg { color: var(--fg); }
+.log-body .msg { color: var(--fg); min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
 
 /* ===== Class sheet ===== */
 .sheet-scrim {

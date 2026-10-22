@@ -224,9 +224,9 @@ export const rostersFromTsv = (raw: string): Rosters => {
     .filter((line) => !line.startsWith("class_key\t"))
     .forEach((line) => {
       const [classKey, number, name] = line.split("\t");
-      if (!classKey || !number || !name) return;
+      if (!classKey || !number) return;
       next[classKey] = next[classKey] || [];
-      next[classKey].push({ n: Number(number), name });
+      next[classKey].push({ n: Number(number), name: name || "" });
     });
   return next;
 };
@@ -237,7 +237,6 @@ export const rostersToTsv = (rosters: Rosters): string => {
     .sort()
     .forEach((classKey) => {
       (rosters[classKey] || []).forEach((student) => {
-        if (!student.name) return;
         lines.push([classKey, student.n, student.name].join("\t"));
       });
     });

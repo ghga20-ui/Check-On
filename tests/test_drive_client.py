@@ -11,6 +11,16 @@ from subject_teacher.drive.client import DriveAppDataClient
 E2E_KEY = bytes(range(32))
 
 
+def test_list_files_follows_all_pages():
+    service = MagicMock()
+    service.files.return_value.list.return_value.execute.side_effect = [
+        {"files":[{"name":"attendance-2025-01.json"}], "nextPageToken":"page2"},
+        {"files":[{"name":"attendance-2026-09.json"}]},
+    ]
+    assert DriveAppDataClient(service=service).list_files() == ["attendance-2025-01.json", "attendance-2026-09.json"]
+    assert service.files.return_value.list.call_args.kwargs["pageToken"] == "page2"
+
+
 def mock_files(list_result: list[dict]):
     files = MagicMock()
     files.list.return_value.execute.return_value = {"files": list_result}

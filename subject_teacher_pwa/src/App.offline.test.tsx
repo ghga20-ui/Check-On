@@ -19,6 +19,55 @@ async function saveAbsenceForFirstLesson(user: ReturnType<typeof userEvent.setup
 }
 
 describe("offline queue persistence in the app", () => {
+  it("holds saves while disconnected and sends them after reconnect without losing marks", async () => {
+    const user = userEvent.setup();
+    const onSaveSlot = vi.fn().mockResolvedValue(undefined);
+    const view = render(<App initialDate="2026-05-04" canSync={false} onSaveSlot={onSaveSlot} />);
+    await saveAbsenceForFirstLesson(user);
+    expect(onSaveSlot).not.toHaveBeenCalled();
+    expect(screen.getByText("Drive 대기")).toBeInTheDocument();
+    view.rerender(<App initialDate="2026-05-04" canSync onSaveSlot={onSaveSlot} />);
+    await waitFor(() => expect(screen.getByText("Drive 완료")).toBeInTheDocument());
+    expect(onSaveSlot).toHaveBeenCalledTimes(1);
+    expect(onSaveSlot.mock.calls[0][2].absences[0].studentNumber).toBe(3);
+  });
+  it("keeps a conflicted draft and only overwrites after comparing the latest record", async () => {
+    const user = userEvent.setup();
+    const conflict = new Error("다른 기기에서 수정됐습니다.");
+    conflict.name = "DriveConflictError";
+    const onSaveSlot = vi.fn().mockRejectedValueOnce(conflict).mockResolvedValueOnce(undefined);
+    const latest = { absences: [{ studentNumber: 9, markType: "absent" as const, note: "" }],
+      checkedAt: "2026-05-04T11:00:00Z", source: "pc" as const, syncedToNeis: false, closedOnNeis: false };
+    const onLoadMonth = vi.fn().mockResolvedValue({ "2026-05-04": { "mon-3": latest } });
+    render(<App initialDate="2026-05-04" initialMonth="2026-05" onSaveSlot={onSaveSlot} onLoadMonth={onLoadMonth} />);
+    await saveAbsenceForFirstLesson(user);
+    await waitFor(() => expect(screen.getByText("Drive 실패")).toBeInTheDocument());
+    expect(onSaveSlot).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: /최신 기록과 비교/ }));
+    expect(await screen.findByRole("dialog", { name: "동시 수정 확인" })).toBeInTheDocument();
+    expect(screen.getByText("Drive 최신 기록: 9번 결과")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "내 기록으로 다시 저장" }));
+    await waitFor(() => expect(screen.getByText("Drive 완료")).toBeInTheDocument());
+    expect(onSaveSlot.mock.calls[1][3]).toEqual(latest);
+    expect(onSaveSlot.mock.calls[1][2].syncedToNeis).toBe(false);
+  });
+
+  it("can accept the remote record without another upload", async () => {
+    const user = userEvent.setup();
+    const onSaveSlot = vi.fn().mockRejectedValue(new Error("conflict"));
+    const latest = { absences: [], checkedAt: "2026-05-04T11:00:00Z", source: "pc" as const,
+      syncedToNeis: true, closedOnNeis: false };
+    const onLoadMonth = vi.fn().mockResolvedValue({ "2026-05-04": { "mon-3": latest } });
+    render(<App initialDate="2026-05-04" initialMonth="2026-05" onSaveSlot={onSaveSlot} onLoadMonth={onLoadMonth} />);
+    await saveAbsenceForFirstLesson(user);
+    await waitFor(() => expect(screen.getByText("Drive 실패")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: /최신 기록과 비교/ }));
+    await user.click(await screen.findByRole("button", { name: "최신 기록 사용" }));
+    expect(onSaveSlot).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Drive 실패")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /2-1 문학/ }));
+    expect(screen.getByRole("button", { name: /^3번 .* 출석$/ })).toBeInTheDocument();
+  });
   it("restores a pending save after the app is reloaded", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<App initialDate="2026-05-04" />);

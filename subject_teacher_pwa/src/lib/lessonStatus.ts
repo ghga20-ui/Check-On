@@ -73,7 +73,7 @@ export function computeLessonDisplayStatus(
 }
 
 function getExceptionStatus(attendance: SlotAttendance): LessonDisplayStatus {
-  const absences = attendance.absences.slice().sort((a, b) => a.studentNumber - b.studentNumber);
+  const absences = attendance.absences.slice().sort((a, b) => (a.studentNumber ?? 0) - (b.studentNumber ?? 0));
 
   if (absences.length === 0) {
     return {
@@ -92,7 +92,7 @@ function getExceptionStatus(attendance: SlotAttendance): LessonDisplayStatus {
     checked: true,
     compactLabel: `${uniqueLabels.join("·")} ${absences.length}명`,
     summaryText: absences
-      .map((absence) => `${absence.studentNumber}번 ${MARK_LABELS[absence.markType]}`)
+      .map((absence) => `${absence.studentNumber !== undefined ? `${absence.studentNumber}번` : "혼합수업 학생"} ${MARK_LABELS[absence.markType]}`)
       .join(", "),
     absenceCount: absences.length,
   };

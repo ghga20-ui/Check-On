@@ -395,7 +395,7 @@ export const SyncEncryptionCard = ({ api }: { api?: DesktopApi }) => {
   );
 };
 
-export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey, setNeisApiKey, saveNeisApiKey, appendLog, loadSetupData, saveSettings, saveTimetable, previewNeisPublicTimetable, findNeisSubjectCandidates, publishNeisTimetableForMobile }) => {
+export const TimetableView = ({ rows, setRows, settings, setSettings, appendLog, loadSetupData, saveSettings, saveTimetable, previewNeisPublicTimetable, findNeisSubjectCandidates, publishNeisTimetableForMobile, mixedPanel = null as React.ReactNode }) => {
   const [selected, setSelected] = useState<any>(new Set());
   const [day, setDay] = useState<any>("전체");
   const [subjectLookup, setSubjectLookup] = useState<any>({ index: null, loading: false, error: "", lessons: [] });
@@ -477,9 +477,6 @@ export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey
       appendLog("ERR", "담당 수업을 최소 1건 입력해 주세요");
       return;
     }
-    if (String(neisApiKey || "").trim()) {
-      saveNeisApiKey();
-    }
     Promise.resolve(saveSettings(`담당 수업 ${validLessons.length}건 저장 완료`))
       .then(() => publishNeisTimetableForMobile && publishNeisTimetableForMobile(undefined, { force: true }));
   };
@@ -521,13 +518,6 @@ export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey
                 <div className="desc">실행 화면에서 선택한 날짜의 NEIS 시간표를 조회하고, 아래 학급·과목과 맞는 수업만 표시합니다.</div>
               </div>
               <button className="tb-btn" onClick={addAssignedLesson}><Icon name="plus" size={14}/> 담당 수업 추가</button>
-            </div>
-            <div className="api-key-row">
-              <div className="field">
-                <label>NEIS Open API 키</label>
-                <input className="input" type="password" value={neisApiKey} onChange={e => setNeisApiKey(e.target.value)} placeholder="로컬에만 저장됩니다"/>
-              </div>
-              <button className="tb-btn" onClick={saveNeisApiKey}><Icon name="check" size={14}/> API 키 저장</button>
             </div>
             <div className="mode-help">
               내가 가르치는 학년·반·과목을 추가하고 위의 ‘담당 수업 저장’을 누르세요. 선택한 날짜의 NEIS 시간표에서 그 수업을 자동으로 찾아 줍니다.
@@ -640,7 +630,7 @@ export const TimetableView = ({ rows, setRows, settings, setSettings, neisApiKey
   );
 };
 
-export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, saveRosters, importRosterFile }) => {
+export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, saveRosters, importRosterFile, mixedPanel = null as React.ReactNode }) => {
   const keys = Object.keys(rosters);
   const [klass, setKlass] = useState<any>(keys[0]);
   const [paste, setPaste] = useState<any>("");
@@ -695,10 +685,12 @@ export const RosterView = ({ rosters, setRosters, appendLog, loadSetupData, save
         <div className="page-hero">
           <div>
             <h1>학생 명부</h1>
-            <div className="subtitle">학급 목록은 시간표의 학년-반과 자동으로 맞춰집니다.</div>
+            <div className="subtitle">한 반 수업의 학급 목록은 시간표의 학년-반과 자동으로 맞춰집니다. 혼합수업 명부는 아래 전용 화면에서 관리합니다.</div>
           </div>
           <PillTabs value={klass} onChange={setKlass} options={keys.map(k => ({value:k, label:k}))}/>
         </div>
+
+        {mixedPanel}
 
         <div className="card card-pad" style={{marginBottom:16}}>
           <div style={{display:"flex",gap:14,alignItems:"flex-start"}}>

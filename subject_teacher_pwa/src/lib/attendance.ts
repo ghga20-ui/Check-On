@@ -1,10 +1,11 @@
 import type { MarkType, SlotAttendance, StudentEntry } from "./schemas";
 
 export type StudentMark = "present" | MarkType;
-export type MarksByStudent = Record<number, StudentMark>;
+export type MarksByStudent = Record<string, StudentMark>;
+export const studentKey = (student: StudentEntry): string => student.studentId ?? String(student.number);
 
 export function createEmptyMarks(students: StudentEntry[]): MarksByStudent {
-  return Object.fromEntries(students.map((student) => [student.number, "present"]));
+  return Object.fromEntries(students.map((student) => [studentKey(student), "present"]));
 }
 
 export function cycleMark(mark: StudentMark): StudentMark {
@@ -24,24 +25,26 @@ export function slotAttendanceToMarks(
 ): MarksByStudent {
   const marks = createEmptyMarks(students);
   for (const absence of slot?.absences ?? []) {
-    if (absence.studentNumber in marks) {
-      marks[absence.studentNumber] = absence.markType;
+    const key = absence.studentId ?? String(absence.studentNumber);
+    if (key in marks) {
+      marks[key] = absence.markType;
     }
   }
   return marks;
 }
 
-export function marksToSlotAttendance(marks: MarksByStudent, checkedAt: string): SlotAttendance {
+export function marksToSlotAttendance(marks: MarksByStudent, checkedAt: string, mixed?: {groupId: string; rosterRevision: number}): SlotAttendance {
   const absences = Object.entries(marks)
     .filter(([, mark]) => mark !== "present")
-    .map(([studentNumber, mark]) => ({
-      studentNumber: Number(studentNumber),
+    .map(([studentNumber, mark]): SlotAttendance["absences"][number] => ({
+      ...(mixed ? {studentId: studentNumber} : {studentNumber: Number(studentNumber)}),
       markType: mark as MarkType,
       note: "",
     }))
-    .sort((a, b) => a.studentNumber - b.studentNumber);
+    .sort((a, b) => String(a.studentId ?? a.studentNumber).localeCompare(String(b.studentId ?? b.studentNumber), undefined, {numeric: true}));
 
   return {
+    ...mixed,
     absences,
     checkedAt,
     source: "mobile",

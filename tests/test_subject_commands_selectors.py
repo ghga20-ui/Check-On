@@ -96,7 +96,7 @@ class _FakeDriver:
 def _patch_click_save_wait(monkeypatch, driver):
     monkeypatch.setattr(subject_commands, "_wait", lambda *_args, **_kwargs: _FakeWait(driver.button))
     monkeypatch.setattr(subject_commands, "_click_element_like_user", lambda _driver, _button: None)
-    monkeypatch.setattr(subject_commands, "_wait_for_save_completion", lambda _driver: None)
+    monkeypatch.setattr(subject_commands, "_wait_for_save_completion", lambda _driver, **_kwargs: None)
 
 
 def test_menu_path_matches_manual():
@@ -242,6 +242,40 @@ def test_click_save_closes_saved_notice_modal(monkeypatch):
 
     assert driver.clicked_notice_ok is True
     assert result == "saved"
+
+
+def test_acknowledged_save_does_not_wait_for_a_second_notice(monkeypatch):
+    driver = _FakeDriver(saved_notice=True)
+    _patch_click_save_wait(monkeypatch, driver)
+    from unittest.mock import MagicMock
+    wait = MagicMock(return_value=None)
+    monkeypatch.setattr(subject_commands, "_wait_for_save_completion", wait)
+    assert subject_commands.click_save(driver) == "saved"
+    assert wait.call_args.kwargs.get("acknowledged") is True
+
+
+def test_acknowledged_save_waits_for_overlay_but_has_no_extra_quiet_delay(monkeypatch):
+    snapshots = iter([{"loadingCount":1,"dialogs":[]},
+                      {"loadingCount":0,"dialogs":["저장했습니다"]},
+                      {"loadingCount":0,"dialogs":[]}])
+    sleeps=[]
+    monkeypatch.setattr(subject_commands,"_accept_browser_alert",lambda *a,**k:False)
+    monkeypatch.setattr(subject_commands,"_click_neis_save_notice_ok",lambda d:None)
+    monkeypatch.setattr(subject_commands,"_save_completion_snapshot",lambda d:next(snapshots))
+    monkeypatch.setattr(subject_commands.time,"sleep",sleeps.append)
+    subject_commands._wait_for_save_completion(object(),acknowledged=True)
+    assert sleeps == [0.15,0.15]
+
+
+def test_missing_completion_notice_keeps_existing_wait(monkeypatch):
+    clock=[0.0]
+    monkeypatch.setattr(subject_commands,"_accept_browser_alert",lambda *a,**k:False)
+    monkeypatch.setattr(subject_commands,"_click_neis_save_notice_ok",lambda d:None)
+    monkeypatch.setattr(subject_commands,"_save_completion_snapshot",lambda d:{"loadingCount":0,"dialogs":[]})
+    monkeypatch.setattr(subject_commands.time,"monotonic",lambda:clock[0])
+    monkeypatch.setattr(subject_commands.time,"sleep",lambda s:clock.__setitem__(0,clock[0]+s))
+    subject_commands._wait_for_save_completion(object())
+    assert clock[0] >= 3
 
 
 def test_click_close_accepts_neis_internal_confirm_modal(monkeypatch):

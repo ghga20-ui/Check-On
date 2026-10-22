@@ -1,0 +1,22 @@
+import React from 'react';
+import {afterEach,it,expect,vi} from 'vitest';
+import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
+import {HistoryView} from './attendance-history-view';
+import {getApi} from './bridge';
+vi.mock('./bridge',()=>({getApi:vi.fn()}));
+afterEach(cleanup);
+it('deletes a former class only after warning and reloads the class list',async()=>{
+ let removed=false;
+ const remove=vi.fn(async()=>{removed=true;});
+ vi.mocked(getApi).mockResolvedValue({get_attendance_history:async(start,end)=>JSON.stringify({start,end,token:'x',year:2026,term:2,classes:removed?[]:[{key:'2-1',label:'2학년 1반'}],rows:[]})} as any);
+ render(<HistoryView onDelete={remove}/>);
+ await screen.findByRole('option',{name:'2학년 1반'});
+ fireEvent.change(screen.getByLabelText('학급'),{target:{value:'2-1'}});
+ fireEvent.click(screen.getByText('선택 학급·전체 기록 삭제'));
+ const dialog=screen.getByRole('dialog');
+ expect(dialog.textContent).toContain('조회 기간 밖의 기록도 삭제');
+ expect(remove).not.toHaveBeenCalled();
+ fireEvent.click(within(dialog).getByRole('button',{name:'학급과 모든 기록 삭제'}));
+ await waitFor(()=>expect(screen.queryByRole('option',{name:'2학년 1반'})).toBeNull());
+ expect(remove).toHaveBeenCalledWith('2-1');
+});

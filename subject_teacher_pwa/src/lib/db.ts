@@ -76,3 +76,23 @@ export async function persistQueue(items: SaveQueueItem[]): Promise<void> {
     db.close();
   }
 }
+
+/** Atomically refuse logout while any attendance is unsent, otherwise clear device data. */
+export async function clearSyncedDeviceData(): Promise<void> {
+  if (!hasIndexedDB()) throw new Error("기기 저장소를 확인하지 못했습니다.");
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE, CACHE_STORE, KEYS_STORE], "readwrite");
+      let blocked = false;
+      const request = tx.objectStore(STORE).getAll();
+      request.onsuccess = () => {
+        if ((request.result as SaveQueueItem[]).some(item => item.status !== "synced")) { blocked = true; tx.abort(); return; }
+        for (const name of [STORE, CACHE_STORE, KEYS_STORE]) tx.objectStore(name).clear();
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(blocked ? new Error("전송하지 못한 출결이 있습니다. 먼저 기존 계정으로 저장을 완료해 주세요.") : tx.error);
+    });
+  } finally { db.close(); }
+}

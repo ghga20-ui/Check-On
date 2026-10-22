@@ -1,6 +1,8 @@
 """Schema migration registry for Drive-backed JSON files."""
 from __future__ import annotations
 
+from copy import deepcopy
+
 from typing import Callable
 
 from subject_teacher.drive.schemas import SCHEMA_VERSION
@@ -12,6 +14,22 @@ class UnsupportedSchemaVersionError(RuntimeError):
 
 Upgrader = Callable[[dict], dict]
 _UPGRADERS: dict[int, Upgrader] = {}
+
+
+def migrate_homeroom(data: dict) -> dict:
+    if type(data.get('schemaVersion')) is not int or data['schemaVersion'] not in (1, 2, 3):
+        raise UnsupportedSchemaVersionError('담임 기록 형식이 더 최신입니다. 체크온을 업데이트해 주세요.')
+    upgraded = deepcopy(data)
+    upgraded['schemaVersion'] = 3
+    return upgraded
+
+
+def migrate_mixed(data: dict) -> dict:
+    """Add the optional retirement flag without rewriting historical rosters."""
+    upgraded = deepcopy(data)
+    for group in upgraded.get("groups", {}).values():
+        group.setdefault("archived", False)
+    return upgraded
 
 
 def register_upgrader(
@@ -32,6 +50,9 @@ def register_upgrader(
 def migrate(data: dict) -> dict:
     """Migrate raw schema data up to the current schema version."""
     version = data.get("schemaVersion", SCHEMA_VERSION)
+    # v2 is an explicit monthly attendance contract, not a rewrite of legacy files.
+    if version == 2 and "month" in data and "records" in data:
+        return dict(data)
     if version > SCHEMA_VERSION:
         raise UnsupportedSchemaVersionError(
             f"file was written by a newer app (v{version} > v{SCHEMA_VERSION})"

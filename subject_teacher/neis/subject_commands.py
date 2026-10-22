@@ -1354,26 +1354,41 @@ def _save_completion_snapshot(driver: WebDriver) -> dict:
     return result if isinstance(result, dict) else {}
 
 
-def _wait_for_save_completion(driver: WebDriver) -> str | None:
+class SaveOverlayNotClosedError(RuntimeError):
+    """Do not navigate while a save overlay has an uncertain state."""
+
+
+def _wait_for_save_completion(driver: WebDriver, *, acknowledged: bool = False) -> str | None:
     started_at = time.monotonic()
     saw_loading = False
+    completion_result = None
     for _ in range(40):
         _accept_browser_alert(driver, attempts=1, delay=0)
         notice_result = _click_neis_save_notice_ok(driver)
         if notice_result:
-            return notice_result
+            acknowledged = True
+            completion_result = notice_result
         try:
             snapshot = _save_completion_snapshot(driver)
         except Exception:
             time.sleep(0.15)
             continue
         loading_count = snapshot.get("loadingCount", 0)
+        if acknowledged:
+            # The completion notice has already been accepted. Wait only for
+            # its overlay/loading to disappear, not another completion notice.
+            if snapshot and loading_count == 0 and not snapshot.get("dialogs"):
+                return completion_result
+            time.sleep(0.15)
+            continue
         if loading_count:
             saw_loading = True
         if loading_count == 0 and time.monotonic() - started_at >= (1.5 if saw_loading else 3.0):
             return None
         time.sleep(0.15)
     _dump_save_diagnostics(driver, "save completion wait timed out")
+    if acknowledged:
+        raise SaveOverlayNotClosedError("저장 안내가 닫히지 않았습니다. 화면을 확인해 주세요.")
     return None
 
 
@@ -1412,7 +1427,7 @@ def click_save(driver: WebDriver) -> str | None:
         time.sleep(0.3)
 
     notice_result = _click_neis_save_notice_ok(driver)
-    completion_result = _wait_for_save_completion(driver)
+    completion_result = _wait_for_save_completion(driver, acknowledged=bool(notice_result))
     return notice_result or completion_result
 
 

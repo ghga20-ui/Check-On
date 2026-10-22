@@ -160,60 +160,31 @@ def test_query_class_timetable_maps_high_school_rows_to_preview_lessons():
     ]
 
 
-def test_fetch_json_falls_back_to_http_after_ssl_wrong_version(monkeypatch):
+def test_fetch_json_uses_https_proxy_without_local_key(monkeypatch):
+    import json
+    from io import BytesIO
     calls = []
-
-    class FakeResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def fake_urlopen(url, timeout):
-        calls.append(url)
-        if url.startswith("https://"):
-            raise URLError("[SSL: WRONG_VERSION_NUMBER] wrong version number")
-        return FakeResponse()
-
+    def fake_urlopen(request, timeout):
+        calls.append(request)
+        return BytesIO(b'{"ok":true}')
     monkeypatch.setattr("subject_teacher.neis_open_api.urlopen", fake_urlopen)
-
-    assert _fetch_json("schoolInfo", {"Type": "json"}) == {"ok": True}
-    assert calls == [
-        "https://open.neis.go.kr/hub/schoolInfo?Type=json",
-        "https://open.neis.go.kr/hub/schoolInfo?Type=json",
-        "http://open.neis.go.kr/hub/schoolInfo?Type=json",
-    ]
+    assert _fetch_json("schoolInfo", {"Type":"json", "KEY":"local-secret"}) == {"ok":True}
+    assert calls[0].full_url == "https://subjectteacherpwa.vercel.app/api/neis"
+    assert calls[0].method == "POST"
+    assert b"local-secret" not in calls[0].data
+    assert json.loads(calls[0].data)["params"] == {"Type":"json"}
 
 
-def test_fetch_json_falls_back_to_http_after_ssl_bad_record_mac(monkeypatch):
-    calls = []
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def fake_urlopen(url, timeout):
-        calls.append(url)
-        if url.startswith("https://"):
-            raise URLError("[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] decryption failed or bad record mac")
-        return FakeResponse()
-
-    monkeypatch.setattr("subject_teacher.neis_open_api.urlopen", fake_urlopen)
-
-    assert _fetch_json("schoolInfo", {"Type": "json"}) == {"ok": True}
-    assert calls[-1] == "http://open.neis.go.kr/hub/schoolInfo?Type=json"
+def test_fetch_json_does_not_fallback_to_plaintext_or_leak_errors(monkeypatch):
+    calls=[]
+    def fake_urlopen(request, timeout):
+        calls.append(request.full_url)
+        raise URLError("sensitive diagnostic")
+    monkeypatch.setattr("subject_teacher.neis_open_api.urlopen",fake_urlopen)
+    with pytest.raises(NeisOpenApiError) as exc:
+        _fetch_json("schoolInfo", {})
+    assert "sensitive" not in str(exc.value)
+    assert len(calls)==2 and all(url.startswith("https://") for url in calls)
 
 
 def test_query_class_timetable_reuses_school_cache_across_calls():

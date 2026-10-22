@@ -7,16 +7,18 @@ export interface SaveQueueItem {
   date: string;
   slotId: string;
   payload: SlotAttendance;
+  baseline?: SlotAttendance | null;
   status: QueueStatus;
   createdAt: string;
   syncedAt?: string;
+  error?: string;
 }
 
-export type SaveQueueInput = Pick<SaveQueueItem, "date" | "slotId" | "payload">;
+export type SaveQueueInput = Pick<SaveQueueItem, "date" | "slotId" | "payload" | "baseline">;
 
 export function enqueueSave(queue: SaveQueueItem[], input: SaveQueueInput): SaveQueueItem[] {
   const existingPending = queue.find(
-    (item) => item.status === "pending" && item.date === input.date && item.slotId === input.slotId,
+    (item) => item.status !== "synced" && item.date === input.date && item.slotId === input.slotId,
   );
   const nextItem: SaveQueueItem = {
     ...input,
@@ -60,11 +62,14 @@ export function markStatusByTarget(
   date: string,
   slotId: string,
   status: Exclude<QueueStatus, "pending">,
+  checkedAt?: string,
+  error?: string,
 ): SaveQueueItem[] {
   const syncedAt = status === "synced" ? new Date().toISOString() : undefined;
   return queue.map((item) =>
     item.date === date && item.slotId === slotId && item.status !== "synced"
-      ? { ...item, status, ...(syncedAt ? { syncedAt } : {}) }
+      && (checkedAt === undefined || item.payload.checkedAt === checkedAt)
+      ? { ...item, status, error, ...(syncedAt ? { syncedAt } : {}) }
       : item,
   );
 }

@@ -26,6 +26,39 @@ def make_attendance(absences: list[Absence], synced: bool = False) -> SlotAttend
     )
 
 
+def test_consecutive_days_reuse_menu_but_always_change_date_and_search():
+    driver, commands = MagicMock(), MagicMock()
+    for index, day in enumerate(["2026-09-10", "2026-09-11"]):
+        process_day(driver, DayInput(day, 2026, 2, []), False, cmd=commands,
+                    strict_date=True, reuse_page=index > 0)
+    commands.open_subject_attendance_page.assert_called_once()
+    commands.select_day_mode.assert_called_once()
+    assert commands.select_date.call_args_list == [call(driver,"2026-09-10"),call(driver,"2026-09-11")]
+    assert commands.click_search.call_count == 2
+
+
+def test_reused_page_date_failure_stops_before_search_or_marking():
+    driver, commands = MagicMock(), MagicMock()
+    commands.select_date.side_effect = RuntimeError("wrong date")
+    result = process_day(driver, DayInput("2026-09-11",2026,2,[(make_slot("s",1),make_attendance([]))]),
+                         False, cmd=commands, strict_date=True, reuse_page=True)
+    assert result[0].status == "failed"
+    commands.open_subject_attendance_page.assert_not_called()
+    commands.click_search.assert_not_called()
+    commands.select_period.assert_not_called()
+
+
+def test_unclosed_save_overlay_blocks_next_class():
+    from subject_teacher.neis.subject_commands import SaveOverlayNotClosedError
+    driver, commands, update = MagicMock(), MagicMock(), MagicMock()
+    commands.click_save.side_effect = SaveOverlayNotClosedError("overlay remains")
+    day = DayInput("2026-09-11",2026,2,[(make_slot("a",1),make_attendance([])),(make_slot("b",2),make_attendance([]))])
+    results=process_day(driver,day,False,cmd=commands,on_update=update)
+    assert [r.status for r in results] == ["failed","failed"]
+    commands.select_period.assert_called_once()
+    update.assert_not_called()
+
+
 def test_skips_slots_already_synced():
     driver = MagicMock()
     commands = MagicMock()

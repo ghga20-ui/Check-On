@@ -5,6 +5,16 @@ const ok = (value: unknown): Promise<string> => Promise.resolve(JSON.stringify(v
 
 export function createMockApi(): DesktopApi {
   return {
+    preview_homeroom_run:()=>ok({error:"나이스 연결 점검은 데스크톱 앱에서 가능합니다."}),
+    start_homeroom_run:()=>ok({error:"미리보기에서는 나이스에 입력하지 않습니다."}),
+    get_homeroom_day: () => ok({revision:0,events:[]}),
+    save_homeroom_day: () => ok({error:"미리보기에서는 저장할 수 없습니다. 데스크톱 앱에서 연결해 주세요."}),
+    get_homeroom_history: () => ok([]),
+    download_roster_template: () => ok({error:"데스크톱 앱에서 양식을 저장해 주세요."}),
+    remove_class: () => ok({ok:true}),
+    get_mixed_groups: () => ok({ ok: true, document: { schemaVersion: 1, revision: 0, groups: {} }, encryptionEnabled: false }),
+    save_mixed_group: () => ok({ error: "미리보기에서는 혼합수업을 저장할 수 없습니다." }),
+    import_mixed_students_file: () => ok({ cancelled: true }),
     get_settings: () =>
       ok({
         schemaVersion: 1,
@@ -41,6 +51,8 @@ export function createMockApi(): DesktopApi {
       ),
     save_students_tsv: () => ok({ ok: true }),
     get_today_slots: () => ok(TODAY_SLOTS),
+    get_attendance_history: (start, end) => ok({ start, end, classes: [{ key: "2-1", label: "2학년 1반" }], rows: [], token: "preview", year: 2026, term: 2 }),
+    start_range_run: () => ok({ error: "나이스 반영은 데스크톱 앱에서 실행해 주세요." }),
     save_slot_attendance: () => ok({ ok: true, checkedAt: "2026-04-20T09:00:00+09:00" }),
     delete_slot_attendance: () => ok({ ok: true }),
     get_drive_user: () => ok({ displayName: "Demo", emailAddress: "demo@example.com" }),

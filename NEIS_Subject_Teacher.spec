@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import json
 
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -19,6 +20,9 @@ datas = [
 # Resolved at runtime via paths.get_client_secrets_path() from sys._MEIPASS.
 _client_secrets = ROOT / "client_secrets.json"
 if _client_secrets.exists():
+    _oauth_config = json.loads(_client_secrets.read_text(encoding="utf-8-sig"))
+    if "web" in _oauth_config or not isinstance(_oauth_config.get("installed"), dict):
+        raise ValueError("Only installed-app OAuth configuration may be bundled; web secrets are forbidden.")
     datas.append((str(_client_secrets), "."))
 
 hiddenimports = [

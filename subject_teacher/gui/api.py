@@ -14,6 +14,8 @@ from typing import Iterable
 from googleapiclient.discovery import build
 
 from subject_teacher.app_service import run_day
+from subject_teacher.attendance_history import load_history
+from subject_teacher.batch_run import run_range
 from subject_teacher.auth.google_oauth import (
     REAUTH_MESSAGE,
     get_credentials,
@@ -21,6 +23,9 @@ from subject_teacher.auth.google_oauth import (
     revoke,
 )
 from subject_teacher.drive import crypto
+from subject_teacher.drive.concurrency import DriveConflictError
+from subject_teacher.drive.mixed import MixedGroups, revise_group, strip_names, validate_attendance
+from subject_teacher.mixed_service import matching_group, preview_rows, save_local_names, with_local_names
 from subject_teacher.drive.schemas import (
     SCHEMA_VERSION,
     Absence,
@@ -55,6 +60,7 @@ logger = logging.getLogger(__name__)
 SLOT_CACHE_TTL_SECONDS = 60
 API_IO_LOCK = threading.RLock()
 SERIALIZED_API_METHODS = {
+    "get_homeroom_day", "save_homeroom_day", "get_homeroom_history", "preview_homeroom_run",
     "get_drive_user",
     "get_settings",
     "save_settings",
@@ -67,7 +73,12 @@ SERIALIZED_API_METHODS = {
     "get_students_tsv",
     "save_students_tsv",
     "import_students_file",
+    "get_mixed_groups",
+    "save_mixed_group",
+    "import_mixed_students_file",
     "get_today_slots",
+    "get_attendance_history",
+    "remove_class",
     "get_mobile_snapshot",
     "get_mobile_attendance_month",
     "save_mobile_slot_attendance",
@@ -146,23 +157,24 @@ def _students_from_rows(rows: Iterable[Iterable[str]]) -> list[dict[str, object]
     number_index = next((i for i, cell in enumerate(first) if cell in number_headers), None)
     name_index = next((i for i, cell in enumerate(first) if cell in name_headers), None)
     data_rows = cleaned
-    if number_index is not None and name_index is not None:
+    if number_index is not None:
         data_rows = cleaned[1:]
     else:
         number_index, name_index = 0, 1
 
     students: list[dict[str, object]] = []
-    for row in data_rows:
-        if len(row) <= max(number_index, name_index):
-            continue
-        number_text = row[number_index]
-        name = row[name_index]
-        if not number_text or not name:
-            continue
+    seen = set()
+    for row_index, row in enumerate(data_rows, 1):
+        number_text = row[number_index] if len(row) > number_index else ""
+        name = row[name_index] if name_index is not None and len(row) > name_index else ""
         try:
-            number = int(float(number_text))
-        except ValueError:
-            continue
+            value = float(number_text)
+            number = int(value)
+            if value != number or not 1 <= number <= 99 or number in seen:
+                raise ValueError()
+        except (ValueError, OverflowError):
+            raise ValueError(f"{row_index}행의 번호를 확인해 주세요. 1~99 사이의 중복 없는 번호가 필요합니다.") from None
+        seen.add(number)
         students.append({"n": number, "name": name})
 
     if not students:
@@ -209,12 +221,16 @@ def _save_slot_attendance_record(
     date_str: str,
     slot_id: str,
     attendance: SlotAttendance,
+    expected_checked_at: str | None = None,
 ) -> MonthlyAttendance:
     with API_IO_LOCK:
         store = build_store()
         month = date_str[:7]
         monthly = store.load_monthly(month) or _empty_mobile_month(month)
         day_records = dict(monthly.records.get(date_str, {}))
+        current = day_records.get(slot_id)
+        if expected_checked_at is not None and (current.checked_at if current else "") != expected_checked_at:
+            raise DriveConflictError("이 수업이 다른 기기에서 수정됐습니다. 새로고침 후 최신 기록을 확인해 주세요.")
         day_records[slot_id] = attendance
         monthly.records[date_str] = day_records
         store.save_monthly(monthly)
@@ -245,7 +261,7 @@ def _slot_marks(attendance: SlotAttendance | None) -> dict[str, str]:
     if attendance is None:
         return {}
     return {
-        str(absence.student_number): absence.mark_type.value
+        str(absence.student_id or absence.student_number): absence.mark_type.value
         for absence in attendance.absences
     }
 
@@ -272,7 +288,7 @@ def _neis_mode_today_slots(
     # `monthly` is supplied (and cached) by the caller; this function does no
     # Drive I/O so it is safe to call from the per-class thread pool below.
     day_records = monthly.records.get(date_str, {}) if monthly else {}
-    api_key = load_local_neis_api_key()
+    api_key = ""  # Public queries use the operator key on the proxy.
 
     def rows_for_assigned(assigned) -> list[dict[str, object]]:
         grade = int(_assigned_value(assigned, "grade", 0))
@@ -346,8 +362,14 @@ def _neis_mode_today_slots(
 
 
 class Api:
+    def startup_probe(self) -> dict:
+        """Cloud-free handshake used by the actual desktop startup monitor."""
+        from subject_teacher.version import VERSION
+        return {"app": "CheckOn", "version": VERSION}
+
     def __init__(self) -> None:
         self._window = None
+        self._run_lock = threading.Lock()
         self._store_cache = None
         self._slot_cache: dict[tuple[object, ...], tuple[float, list[dict[str, object]]]] = {}
         # Shared NEIS school-code cache so repeated/parallel timetable lookups
@@ -656,7 +678,7 @@ class Api:
             result = search_schools(
                 region=str(data.get("region") or ""),
                 school_name=str(data.get("schoolName") or ""),
-                api_key=str(data.get("apiKey") or "") or load_local_neis_api_key(),
+                api_key="",
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
@@ -674,7 +696,7 @@ class Api:
                 date_str=str(data.get("date") or ""),
                 grade=int(data.get("grade") or 0),
                 class_no=str(data.get("classNo") or ""),
-                api_key=str(data.get("apiKey") or ""),
+                api_key="",
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
@@ -746,7 +768,7 @@ class Api:
                 grade=int(data.get("grade") or 0),
                 class_no=str(data.get("classNo") or ""),
                 subject_name=str(data.get("subjectName") or ""),
-                api_key=str(data.get("apiKey") or "") or load_local_neis_api_key(),
+                api_key="",
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
@@ -797,6 +819,191 @@ class Api:
         except Exception as exc:
             logger.exception("import_students_file failed")
             return _json_error(exc)
+
+    def get_mixed_groups(self) -> str:
+        try:
+            store = self._store()
+            doc = with_local_names(store.load_mixed_groups())
+            return json.dumps({"ok": True, "document": doc.model_dump(by_alias=True, mode="json"),
+                               "encryptionEnabled": store.client.encryption_enabled}, ensure_ascii=False)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def preview_homeroom_run(self, day: str, class_key: str) -> str:
+        try:
+            from subject_teacher.homeroom_service import load_plan
+            plan, _ = load_plan(day, class_key)
+            return json.dumps(plan, ensure_ascii=False)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def start_homeroom_run(self, day: str, class_key: str, token: str, password: str, inspect_only: bool = True) -> str:
+        if not self._run_lock.acquire(blocking=False):
+            return _json_error(ValueError("이미 실행 중입니다. 작업 종료 후 다시 시도해 주세요."))
+        def worker():
+            try:
+                from subject_teacher.homeroom_service import load_plan, run
+                def loader(d, key):
+                    with API_IO_LOCK:
+                        return load_plan(d, key)
+                self._push_progress(0, 1, "담임 출결", "running")
+                result = run(day, class_key, token, password, bool(inspect_only), loader=loader)
+                self._push_log("OK", "담임 화면 연결 점검 완료 · 입력하지 않았습니다." if result['status'] == 'inspected' else "담임 기록 저장 후 재조회 확인 완료 · 출결마감은 하지 않았습니다.")
+                self._push_progress(1, 1, "담임 출결", "done")
+            except Exception as exc:
+                self._push_log("ERR", str(exc))
+                self._push_progress(0, 1, "담임 출결", "error")
+            finally:
+                self._run_lock.release()
+        threading.Thread(target=worker, daemon=True).start()
+        return json.dumps({"ok": True})
+
+    def get_homeroom_day(self, day: str, class_key: str) -> str:
+        try:
+            from subject_teacher.drive.homeroom import load_month, DiaryDay
+            document = load_month(self._store(), day[:7])
+            return document.records.get(day, {}).get(class_key, DiaryDay()).model_dump_json(by_alias=True)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def save_homeroom_day(self, day: str, class_key: str, payload: str) -> str:
+        try:
+            from subject_teacher.drive.homeroom import save_day
+            data = json.loads(payload)
+            return save_day(self._store(), day, class_key, data['revision'], data['events'], curriculum=data.get('curriculum'), decisions=data.get('decisions'), no_changes_confirmed=data.get('noChangesConfirmed', False)).model_dump_json(by_alias=True)
+        except Exception as exc:
+            from pydantic import ValidationError
+            return _json_error(ValueError('학생·교시·사유와 중복 기록을 확인해 주세요.') if isinstance(exc, ValidationError) else exc)
+
+    def get_homeroom_history(self, start: str, end: str, class_key: str) -> str:
+        try:
+            from subject_teacher.attendance_history import months_in_range
+            from subject_teacher.drive.homeroom import load_month
+            store, rows = self._store(), []
+            for month in months_in_range(start, end):
+                for day, classes in load_month(store, month).records.items():
+                    if start <= day <= end and class_key in classes:
+                        rows.extend(dict(date=day, **event.model_dump(by_alias=True)) for event in classes[class_key].events)
+            return json.dumps(rows, ensure_ascii=False)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def download_roster_template(self, mixed: bool = False) -> str:
+        try:
+            import webview
+            from subject_teacher.roster_template import save_template
+            if self._window is None:
+                raise ValueError("데스크톱 앱에서 양식을 저장해 주세요.")
+            paths = self._window.create_file_dialog(webview.SAVE_DIALOG,
+                save_filename="체크온_혼합학급_명단.xlsx" if mixed else "체크온_일반학급_명단.xlsx",
+                file_types=("Excel (*.xlsx)",))
+            if not paths:
+                return json.dumps({"cancelled": True})
+            path = Path(paths if isinstance(paths, str) else paths[0])
+            if path.suffix.lower() != ".xlsx":
+                path = path.with_suffix(".xlsx")
+            save_template(path, mixed)
+            return json.dumps({"ok": True})
+        except Exception as exc:
+            return _json_error(exc)
+
+    def remove_class(self, key: str) -> str:
+        if not self._run_lock.acquire(blocking=False):
+            return _json_error(ValueError("나이스 반영이 끝난 뒤 학급을 삭제해 주세요."))
+        try:
+            from subject_teacher.class_management import remove_class
+            remove_class(self._store(), key)
+            if key.startswith("mixed:"):
+                save_local_names(with_local_names(self._store().load_mixed_groups()))
+            else:
+                from subject_teacher.local_store import load_local_students, save_local_students
+                local = load_local_students()
+                if local and key in local.classes:
+                    del local.classes[key]
+                    save_local_students(local)
+            self._clear_slot_cache()
+            return json.dumps({"ok": True})
+        except Exception as exc:
+            self._clear_slot_cache()
+            return _json_error(exc)
+        finally:
+            self._run_lock.release()
+
+    def save_mixed_group(self, payload: str) -> str:
+        try:
+            data = json.loads(payload)
+            store = self._store()
+            if not store.client.encryption_enabled:
+                raise ValueError("설정에서 모바일 암호화 연결을 먼저 완료해 주세요.")
+            doc = with_local_names(store.load_mixed_groups())
+            if data.get("expectedRevision") != doc.revision:
+                raise DriveConflictError("명부가 변경됐습니다. 다시 불러와 주세요.")
+            if not data.get("id"):
+                timetable = store.load_timetable()
+                settings = store.load_settings()
+                candidates = list(timetable.slots if timetable else []) + list(settings.assigned_lessons if settings else [])
+                for slot in candidates:
+                    if (slot.grade == int(data["grade"]) and str(slot.class_no) == str(data["classNo"]).strip()
+                            and slot.subject_name == str(data["subjectName"]).strip()):
+                        raise ValueError("이미 등록된 수업은 기존 통합학급으로 유지합니다. 새 수업 집단 이름을 입력해 주세요.")
+            revised = revise_group(doc, data)
+            store.save_mixed_groups(revised, doc.revision)
+            save_local_names(revised)
+            self._clear_slot_cache()
+            return json.dumps({"ok": True, "document": revised.model_dump(by_alias=True, mode="json")}, ensure_ascii=False)
+        except Exception as exc:
+            # Validation may contain names; do not write exception payloads to logs.
+            if isinstance(exc, ValueError) and not isinstance(exc, DriveConflictError):
+                from pydantic import ValidationError
+                if isinstance(exc, ValidationError):
+                    return _json_error(ValueError("수업과 학생의 학년·반·번호 또는 중복 여부를 확인해 주세요."))
+            return _json_error(exc)
+
+    def import_mixed_students_file(self, grade: int) -> str:
+        try:
+            if int(grade) not in (1, 2, 3):
+                raise ValueError("수업 학년을 선택해 주세요.")
+            if self._window is None:
+                raise RuntimeError("파일 선택 창을 열 수 없습니다.")
+            import webview
+            paths = self._window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False,
+                                                   file_types=("학생 명부 (*.csv;*.xlsx)",))
+            if not paths:
+                return json.dumps({"cancelled": True})
+            path = Path(paths[0])
+            if path.suffix.lower() == ".csv":
+                rows = _read_csv_rows(path)
+            elif path.suffix.lower() == ".xlsx":
+                rows = _read_xlsx_rows(path)
+            else:
+                raise ValueError("CSV 또는 XLSX 파일을 선택해 주세요.")
+            return json.dumps({"rows": preview_rows(rows, int(grade))}, ensure_ascii=False)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def _decorate_mixed_slots(self, store, date_str, slots):
+        loader = getattr(store, "load_mixed_groups", None)
+        document = loader() if callable(loader) else None
+        if not isinstance(document, MixedGroups) or not document.groups:
+            return slots
+        doc = with_local_names(document)
+        monthly = self._load_monthly_cached(store, date_str[:7])
+        day = monthly.records.get(date_str, {}) if monthly else {}
+        result = []
+        for original in slots:
+            row = dict(original)
+            attendance = day.get(str(row["id"]))
+            group = doc.groups.get(attendance.group_id) if attendance and attendance.group_id else matching_group(
+                doc, int(row["grade"]), str(row["classNo"]), str(row.get("subject") or row.get("neisLabel") or ""))
+            if group:
+                revision = attendance.roster_revision if attendance and attendance.group_id else group.revision
+                roster = group.history.get(str(revision))
+                if roster is None:
+                    raise ValueError("이 출결의 명부 이력이 없습니다.")
+                row.update(groupId=group.id, rosterRevision=revision, currentRosterRevision=group.revision,
+                           roster=f"mixed:{group.id}", mixedStudents=[s.model_dump(by_alias=True) for s in roster])
+            result.append(row)
+        return result
 
     # ?? ?ㅻ뒛 ?섏뾽 ?щ’ ????????????????????????????????????????????????????????
 
@@ -851,7 +1058,7 @@ class Api:
             settings = self._load_settings_cached(store)
             if settings is not None and settings.timetable_mode == "neis":
                 neis_slots = self._cached_neis_mode_today_slots(store, settings, date_str)
-                return json.dumps(self._merge_adhoc_slots(store, date_str, neis_slots), ensure_ascii=False)
+                return json.dumps(self._decorate_mixed_slots(store, date_str, self._merge_adhoc_slots(store, date_str, neis_slots)), ensure_ascii=False)
             summaries = summarize_day(store, date_str)
             monthly = self._load_monthly_cached(store, date_str[:7])
             day_records = monthly.records.get(date_str, {}) if monthly else {}
@@ -882,7 +1089,7 @@ class Api:
                     "marks": _slot_marks(attendance),
                     }
                 )
-            return json.dumps(self._merge_adhoc_slots(store, date_str, result), ensure_ascii=False)
+            return json.dumps(self._decorate_mixed_slots(store, date_str, self._merge_adhoc_slots(store, date_str, result)), ensure_ascii=False)
         except Exception as exc:
             logger.exception("get_today_slots failed")
             return _json_error(exc)
@@ -969,7 +1176,9 @@ class Api:
             logger.exception("delete_slot_attendance failed")
             return _json_error(exc)
 
-    def save_slot_attendance(self, date_str: str, slot_id: str, marks_payload: str) -> str:
+    def save_slot_attendance(self, date_str: str, slot_id: str, marks_payload: str,
+                             expected_checked_at: str | None = None,
+                             group_id: str | None = None, roster_revision: int | None = None) -> str:
         try:
             raw_marks = json.loads(marks_payload)
             if not isinstance(raw_marks, dict):
@@ -983,24 +1192,27 @@ class Api:
                     raise ValueError(f"unknown mark type: {mark!r}")
                 absences.append(
                     Absence(
-                        studentNumber=int(number_text),
+                        **({"studentId": number_text} if group_id else {"studentNumber": int(number_text)}),
                         markType=MarkType(mark),
                         note="",
                     )
                 )
-            absences.sort(key=lambda item: item.student_number)
+            absences.sort(key=lambda item: item.student_id if group_id else item.student_number)
 
-            checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            checked_at = datetime.now().astimezone().isoformat(timespec="microseconds")
             _save_slot_attendance_record(
                 date_str,
                 slot_id,
                 SlotAttendance(
                 absences=absences,
+                groupId=group_id,
+                rosterRevision=roster_revision,
                 checkedAt=checked_at,
                 source="pc",
                 syncedToNeis=False,
                 closedOnNeis=False,
                 ),
+                expected_checked_at=expected_checked_at,
             )
             self._clear_slot_cache(date_str)
             return json.dumps({"ok": True, "checkedAt": checked_at})
@@ -1010,7 +1222,49 @@ class Api:
 
     # ?? NEIS ?ㅽ뻾 ?????????????????????????????????????????????????????????????
 
-    def start_run(self, date_str: str, password: str, close_after: bool) -> None:
+    def get_attendance_history(self, start: str, end: str) -> str:
+        try:
+            from subject_teacher.local_store import load_local_students
+            store = self._store()
+            local_students, local_groups, notice = None, None, ""
+            try:
+                local_students = load_local_students()
+                local_groups = with_local_names(store.load_mixed_groups())
+            except Exception:
+                notice = "PC의 이름 정보를 불러오지 못해 학생 번호로 표시합니다."
+            result = load_history(store, start, end, local_students=local_students, local_groups=local_groups)
+            result["nameNotice"] = notice
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            return _json_error(exc)
+
+    def start_range_run(self, start: str, end: str, password: str, expected_token: str) -> str:
+        if not self._run_lock.acquire(blocking=False):
+            return _json_error(ValueError("이미 반영 중입니다. 실행이 끝난 뒤 다시 시도해 주세요."))
+        def worker():
+            try:
+                self._push_progress(0, 0, start, "running")
+                results = run_range(start, end, password, expected_token, on_progress=self._push_progress)
+                for result in results:
+                    self._push_log("ERR" if result["status"] == "failed" else "OK",
+                                   f'{result["date"]} · {result["slotId"]} · {result["status"]} {result["error"]}')
+                failed = any(r["status"] == "failed" for r in results)
+                self._clear_slot_cache()
+                self._push_log("ERR" if failed else "OK", "실패한 날짜에서 중단했습니다. 내역을 다시 조회해 주세요." if failed else f"기간 반영 완료 · {len(results)}개 수업")
+                self._push_progress(len(results), len(results), "", "error" if failed else "done")
+            except Exception as exc:
+                self._clear_slot_cache()
+                self._push_log("ERR", str(exc))
+                self._push_progress(0, 0, "", "error")
+            finally:
+                self._clear_slot_cache()
+                self._run_lock.release()
+        threading.Thread(target=worker, daemon=True).start()
+        return json.dumps({"ok": True})
+
+    def start_run(self, date_str: str, password: str, close_after: bool) -> str:
+        if not self._run_lock.acquire(blocking=False):
+            return _json_error(ValueError("이미 반영 중입니다. 실행이 끝난 뒤 다시 시도해 주세요."))
         def _worker() -> None:
             try:
                 self._push_log("INFO", f"NEIS 반영 시작 — {date_str}")
@@ -1031,8 +1285,11 @@ class Api:
                         self._push_log("ERR", f"{r.slot_id} 실패: {r.error}")
                     self._push_progress(i, total, r.slot_id, "running")
                 self._clear_slot_cache(date_str)
-                self._push_progress(total, total, "", "done")
-                self._push_log("OK", f"실행 완료 — {total}건 처리됨")
+                failed = sum(r.status == "failed" for r in results)
+                self._push_progress(total, total, "", "error" if failed else "done")
+                self._push_log("ERR" if failed else "OK",
+                               f"실행 종료 — {total}건 중 실패·재확인 {failed}건" if failed
+                               else f"실행 완료 — {total}건 처리됨")
             except Exception as exc:
                 logger.exception("start_run worker failed")
                 # Some slots may have been written before the failure; drop the
@@ -1040,5 +1297,8 @@ class Api:
                 self._clear_slot_cache(date_str)
                 self._push_log("ERR", f"실행 오류: {exc}")
                 self._push_progress(0, 0, "", "error")
+            finally:
+                self._run_lock.release()
 
         threading.Thread(target=_worker, daemon=True).start()
+        return json.dumps({"ok": True})

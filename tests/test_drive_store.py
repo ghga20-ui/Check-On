@@ -9,11 +9,13 @@ from subject_teacher.drive.schemas import (
     StudentEntry,
 )
 from subject_teacher.drive.store import DriveStore
+from subject_teacher.drive.client import JsonSnapshot
 
 
 def client_with(read_map: dict):
     client = MagicMock()
     client.read_json.side_effect = lambda name: read_map.get(name)
+    client.read_snapshot.side_effect = lambda name: JsonSnapshot("id" if name in read_map else None, "v1", read_map.get(name))
     return client
 
 
@@ -85,7 +87,7 @@ def test_save_monthly_roundtrip():
 
     store.save_monthly(monthly)
 
-    name, payload = client.upsert_json.call_args.args
+    name, payload, snapshot = client.write_snapshot.call_args.args
     assert name == "attendance-2026-04.json"
     assert payload["month"] == "2026-04"
 

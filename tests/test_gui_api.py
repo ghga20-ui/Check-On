@@ -67,6 +67,17 @@ class FakeStore:
         self.saved_monthly = monthly
 
 
+def test_pc_save_rejects_remote_change_since_screen_was_loaded(monkeypatch):
+    store = FakeStore()
+    store.monthly = MonthlyAttendance(month="2026-04", records={"2026-04-20": {
+        "mon-3": SlotAttendance(absences=[], checkedAt="newer", source="mobile")
+    }})
+    monkeypatch.setattr(gui_api, "build_store", lambda: store)
+    result = json.loads(Api().save_slot_attendance("2026-04-20", "mon-3", '{"3":"absent"}', "older"))
+    assert result["code"] == "attendance_conflict"
+    assert store.saved_monthly is None
+
+
 def test_timetable_tsv_api_preserves_nonnumeric_class_label(monkeypatch):
     monkeypatch.setattr(gui_api, "build_store", lambda: FakeStore())
 
@@ -269,7 +280,7 @@ def test_neis_public_timetable_preview_api_returns_lessons(monkeypatch):
 
 
 def test_neis_subject_candidate_api_returns_similar_labels(monkeypatch):
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     calls = []
     monkeypatch.setattr(
         gui_api,
@@ -296,7 +307,7 @@ def test_neis_subject_candidate_api_returns_similar_labels(monkeypatch):
         )
     )
 
-    assert calls[0]["api_key"] == "KEY"
+    assert calls[0]["api_key"] == ""
     assert calls[0]["subject_name"] == "공통국어1"
     assert payload["candidates"] == [{"subject": "공통국어Ⅰ", "score": 100}]
 
@@ -319,7 +330,7 @@ def test_neis_mode_today_slots_query_public_timetable(monkeypatch):
     )
     calls = []
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",
@@ -335,7 +346,7 @@ def test_neis_mode_today_slots_query_public_timetable(monkeypatch):
 
     payload = json.loads(Api().get_today_slots("2026-04-20"))
 
-    assert calls[0]["api_key"] == "KEY"
+    assert calls[0]["api_key"] == ""
     assert len(payload) == 1
     assert payload[0]["id"].startswith("neis-2-1-2-")
     assert payload[0]["subject"] == "수학1"
@@ -360,7 +371,7 @@ def test_neis_mode_today_slots_reuses_same_date_cache(monkeypatch):
     )
     calls = []
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",
@@ -401,7 +412,7 @@ def test_today_slots_force_refresh_bypasses_cache(monkeypatch):
     )
     calls = []
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",
@@ -440,7 +451,7 @@ def test_publish_neis_timetable_for_week_saves_materialized_slots(monkeypatch):
     store.saved_timetable = None
     store.save_timetable = lambda timetable: setattr(store, "saved_timetable", timetable)
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",
@@ -496,7 +507,7 @@ def test_publish_neis_timetable_accesses_drive_store_one_day_at_a_time(monkeypat
 
     store.load_monthly = tracking_load_monthly
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",
@@ -530,7 +541,7 @@ def test_publish_reuses_cached_monthly_across_weekdays(monkeypatch):
 
     store.load_monthly = counting_load_monthly
     monkeypatch.setattr(gui_api, "build_store", lambda: store)
-    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: "KEY")
+    monkeypatch.setattr(gui_api, "load_local_neis_api_key", lambda: (_ for _ in ()).throw(AssertionError("public lookup must not read a local key")))
     monkeypatch.setattr(
         gui_api,
         "query_class_timetable",

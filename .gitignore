@@ -49,3 +49,11 @@ tmp_*.txt
 .playwright-mcp/
 session/
 login.png
+
+# Local reference material / one-off dumps (not part of the app)
+*.pdf
+*.xlsm
+neis_manual.txt
+neis_menu.png
+neis_menu_teacher.json
+subject_teacher/output/

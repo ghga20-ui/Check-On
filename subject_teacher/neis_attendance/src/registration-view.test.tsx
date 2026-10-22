@@ -1,0 +1,25 @@
+import React from 'react';
+import {afterEach,it,expect,vi} from 'vitest';
+import {cleanup,render,screen,fireEvent,waitFor} from '@testing-library/react';
+import {RegistrationView} from './registration-view';
+import {getApi} from './bridge';
+vi.mock('./bridge',()=>({getApi:vi.fn()}));
+afterEach(cleanup);
+it('places batch entry inside registration and requires fresh reviewed data',async()=>{
+ vi.mocked(getApi).mockResolvedValue({get_attendance_history:async(start,end)=>JSON.stringify({start,end,token:'snapshot',classes:[{key:'2-1',label:'2학년 1반'}],year:2026,term:2,rows:[{date:start,slotId:'a',classKey:'2-1',subject:'문학',period:3,marks:[],synced:false}]})} as any);
+ const start=vi.fn();
+ render(<RegistrationView dayView={<p>하루 화면</p>} password="test" setPassword={vi.fn()} running={false} progress={{state:'idle'}} onStart={start}/>);
+ expect(screen.getByText('하루 화면')).toBeTruthy();
+ fireEvent.click(screen.getByText('기간 등록'));
+ expect(getApi).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'조회'}));
+ const submit=await screen.findByText('선택 기간 나이스 반영');
+ expect((submit as HTMLButtonElement).disabled).toBe(true);
+ await waitFor(()=>expect((screen.getByRole('button',{name:'조회'}) as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.click(screen.getByLabelText('대상 수업과 학기를 확인했습니다.'));
+ await waitFor(()=>expect((submit as HTMLButtonElement).disabled).toBe(false));
+ fireEvent.click(submit);
+ await waitFor(()=>expect(start).toHaveBeenCalledWith(expect.objectContaining({token:'snapshot'})));
+ fireEvent.change(screen.getByLabelText('시작일'),{target:{value:'2026-01-01'}});
+ expect(screen.queryByText('선택 기간 나이스 반영')).toBeNull();
+});

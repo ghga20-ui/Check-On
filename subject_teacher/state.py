@@ -194,7 +194,7 @@ def parse_students_tsv(raw: str) -> Students:
         stripped = line.strip()
         if not stripped or stripped.startswith("class_key\t"):
             continue
-        parts = [part.strip() for part in stripped.split("\t")]
+        parts = [part.strip() for part in line.split("\t")]
         if len(parts) != 3:
             raise ValueError(f"invalid students row: {line!r}")
         class_key, number, name = parts

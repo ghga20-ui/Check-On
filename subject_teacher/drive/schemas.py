@@ -5,7 +5,7 @@ import re
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator, model_serializer
 from pydantic.alias_generators import to_camel
 
 import regions
@@ -100,6 +100,7 @@ class TimetableSlot(_Base):
     class_no: Annotated[str, Field(min_length=1, max_length=40)]
     subject_name: str
     neis_subject_label: str
+    group_id: str | None = Field(default=None, exclude=True)
 
     @field_validator("class_no", mode="before")
     @classmethod
@@ -137,9 +138,22 @@ class MarkType(str, Enum):
 
 
 class Absence(_Base):
-    student_number: Annotated[int, Field(ge=1, le=99)]
+    student_number: Annotated[int | None, Field(ge=1, le=99)] = None
+    student_id: str | None = None
     mark_type: MarkType
     note: str = ""
+
+    @model_validator(mode="after")
+    def validate_identity(self):
+        if (self.student_number is None) == (self.student_id is None):
+            raise ValueError("학생 번호 또는 학생 ID 하나가 필요합니다.")
+        if self.student_id is not None and not self.student_id.strip():
+            raise ValueError("학생 ID가 비어 있습니다.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_identity(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class SlotAttendance(_Base):
@@ -148,6 +162,24 @@ class SlotAttendance(_Base):
     source: Literal["mobile", "pc"] = "mobile"
     synced_to_neis: bool = False
     closed_on_neis: bool = False
+    group_id: str | None = None
+    roster_revision: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_group(self):
+        mixed = self.group_id is not None
+        if mixed != (self.roster_revision is not None) or (mixed and not self.group_id.strip()):
+            raise ValueError("이동수업 ID와 명부 버전이 필요합니다.")
+        if any((a.student_id is not None) != mixed for a in self.absences):
+            raise ValueError("수업 유형과 학생 식별자가 일치하지 않습니다.")
+        keys = [a.student_id or a.student_number for a in self.absences]
+        if len(keys) != len(set(keys)):
+            raise ValueError("출결에 같은 학생이 중복되었습니다.")
+        return self
+
+    @model_serializer(mode="wrap")
+    def serialize_group(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class DayAttendance(_Base):
@@ -155,9 +187,17 @@ class DayAttendance(_Base):
 
 
 class MonthlyAttendance(_Base):
-    schema_version: int = Field(default=SCHEMA_VERSION)
+    # Local read baseline only. Never serialized or added to the Drive schema.
+    _drive_base: dict | None = PrivateAttr(default=None)
+    schema_version: Literal[1, 2] = SCHEMA_VERSION
     month: str
     records: dict[str, dict[str, SlotAttendance]]
+
+    @model_validator(mode="after")
+    def set_contract_version(self):
+        if any(att.group_id for day in self.records.values() for att in day.values()):
+            self.schema_version = 2
+        return self
 
     @field_validator("month")
     @classmethod

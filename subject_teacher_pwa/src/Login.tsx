@@ -34,11 +34,12 @@ export default function Login({ onSignIn, busy, error, notConfigured }: LoginPro
             </button>
             {error && <p className="login-error">{error}</p>}
             <p className="login-note">
-              학생 이름은 저장하지 않아요. 학번·출결만 본인 Google Drive(숨김 폴더)에
-              저장되고, 외부 서버로 전송되지 않습니다.
+              학생 이름은 Drive에 보내지 않습니다. 학번·출결 등은 본인 Google Drive에 저장하며,
+              로그인 유지에는 인증 서버를 사용합니다. 실제 자료는 학교에서 허용한 범위 안에서 사용해 주세요.
             </p>
           </>
         )}
+        <p><a className="policy-link" href="/getting-started.html">이용 안내</a> · <a className="policy-link" href="/school-guide.html">학교 담당자용 안내</a></p>
         <a className="policy-link" href="/privacy">개인정보처리방침</a>
       </div>
     </div>

@@ -8,8 +8,7 @@ import unicodedata
 from datetime import date as date_type, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Callable
-from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 # NEIS is usually fast (<1s) when healthy; a long timeout only lets a degraded
 # endpoint block the caller. Kept modest so retries/parallel fan-out stay bounded.
@@ -67,19 +66,20 @@ ROMAN_TO_ARABIC = str.maketrans({
 
 
 def _fetch_json(endpoint: str, params: dict[str, object]) -> dict[str, Any]:
-    query = urlencode({key: value for key, value in params.items() if value not in (None, "")})
-    errors: list[Exception] = []
-    for base_url, attempts in (("https://open.neis.go.kr/hub", 2), ("http://open.neis.go.kr/hub", 1)):
-        url = f"{base_url}/{endpoint}?{query}"
-        for _ in range(attempts):
-            try:
-                with urlopen(url, timeout=_REQUEST_TIMEOUT) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except Exception as exc:
-                errors.append(exc)
-                continue
-    message = str(errors[-1]) if errors else "unknown error"
-    raise NeisOpenApiError(f"NEIS Open API 요청 실패: {message}")
+    # The operator's key stays on the server. Never transmit legacy local keys.
+    body = json.dumps({"endpoint": endpoint, "params": {
+        key: value for key, value in params.items() if key != "KEY" and value not in (None, "")
+    }}).encode("utf-8")
+    request = Request("https://subjectteacherpwa.vercel.app/api/neis", data=body,
+                      headers={"Content-Type": "application/json"}, method="POST")
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=_REQUEST_TIMEOUT) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            if attempt == 1:
+                raise NeisOpenApiError("시간표 조회에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.") from None
+    raise NeisOpenApiError("시간표 조회에 연결하지 못했습니다.")
 
 
 def _rows_from_payload(payload: dict[str, Any], root_key: str) -> list[dict[str, Any]]:

@@ -1,6 +1,12 @@
 import { createMockApi } from "./mock-api";
 
 export interface DesktopApi {
+  preview_homeroom_run(date:string,key:string):Promise<string>;
+  start_homeroom_run(date:string,key:string,token:string,password:string,inspectOnly:boolean):Promise<string>;
+  get_homeroom_day(date: string, key: string): Promise<string>;
+  save_homeroom_day(date: string, key: string, payload: string): Promise<string>;
+  get_homeroom_history(start: string, end: string, key: string): Promise<string>;
+  download_roster_template(mixed?: boolean): Promise<string>;
   get_settings(): Promise<string>;
   save_settings(json: string): Promise<string>;
   get_timetable_tsv(): Promise<string>;
@@ -8,7 +14,13 @@ export interface DesktopApi {
   get_students_tsv(): Promise<string>;
   save_students_tsv(tsv: string): Promise<string>;
   get_today_slots(dateStr: string, force?: boolean): Promise<string>;
-  save_slot_attendance(dateStr: string, slotId: string, marksJson: string): Promise<string>;
+  get_attendance_history(start: string, end: string): Promise<string>;
+  start_range_run(start: string, end: string, password: string, expectedToken: string): Promise<string>;
+  save_slot_attendance(dateStr: string, slotId: string, marksJson: string, expectedCheckedAt?: string, groupId?: string | null, rosterRevision?: number | null): Promise<string>;
+  remove_class(key: string): Promise<string>;
+  get_mixed_groups(): Promise<string>;
+  save_mixed_group(payloadJson: string): Promise<string>;
+  import_mixed_students_file(grade: number): Promise<string>;
   delete_slot_attendance(dateStr: string, slotId: string): Promise<string>;
   get_drive_user(): Promise<string>;
   get_neis_api_key(): Promise<string>;

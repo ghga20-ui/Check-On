@@ -1,7 +1,14 @@
 import React from "react";
+import { HomeroomView } from "./homeroom-view";
+import { desktopHomeApi } from "./homeroom-api";
 import { BrandMark, Icon } from "./components";
 import { LogDock } from "./log-panel";
+import { RegistrationView } from "./registration-view";
 import { RunView } from "./run-view";
+import { TimetableWorkspace } from "./timetable-workspace";
+import { ClassManager } from "./class-workspace";
+import { HistoryView } from "./attendance-history-view";
+import { emptyMixedDocument, matchesMixedGroup, type MixedDocument, type MixedGroup } from "./mixed-class";
 import { BasicsView, TimetableView, RosterView, PlaceholderView, ConnectionView } from "./setup-view";
 import { OnboardingGuide } from "./onboarding";
 import { PrivacyPolicy } from "./privacy-policy";
@@ -16,14 +23,19 @@ import {
 
 const { useState, useEffect, useMemo, useRef } = React;
 
+// 담임 출결은 별도 개발 중이라 릴리스에서는 숨긴다. 다시 열려면 true로.
+const HOMEROOM_ENABLED = false;
+
 const NAV = [
   { group: "", items: [
-    { key: "run", label: "오늘 출결", icon: "bolt" },
+    { key: "run", label: "NEIS 출결 등록", icon: "bolt" },
+    ...(HOMEROOM_ENABLED ? [{ key: "homeroom", label: "담임 출결", icon: "users" }] : []),
+    { key: "history", label: "출결 내역", icon: "board" },
   ]},
   { group: "설정", items: [
     { key: "basics",    label: "기본 정보", icon: "gear" },
+    { key: "roster",    label: "학급·명단", icon: "users" },
     { key: "timetable", label: "시간표",   icon: "board" },
-    { key: "roster",    label: "학생 명부", icon: "users" },
     { key: "connect",   label: "연결",     icon: "cloud" },
   ]},
 ];
@@ -42,9 +54,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function App() {
   const [page, setPage] = useState<any>("run");
+  const [homeOpened,setHomeOpened]=useState(false);
+  useEffect(()=>{if(page==="homeroom")setHomeOpened(true);},[page]);
   const [slots, setSlots] = useState<any>(TODAY_SLOTS);
   const [timetable, setTimetable] = useState<any>(TIMETABLE);
   const [rosters, setRosters] = useState<any>(ROSTERS);
+  const [mixedDocument, setMixedDocument] = useState<MixedDocument>(emptyMixedDocument);
+  const [mixedEncryption, setMixedEncryption] = useState(false);
   const [date, setDate] = useState<any>(todayIso());
   const [password, setPassword] = useState<any>("");
   const [closeAfter, setCloseAfter] = useState<any>(false);
@@ -69,16 +85,22 @@ function App() {
     teacherName: "", schoolName: "", schoolCode: "", schoolKind: "", region: "서울", year: "2026", term: "1", effectiveFrom: "2026-03-02", closeByDefault: false,
     timetableMode: "neis", assignedLessons: []
   });
-  const [neisApiKey, setNeisApiKey] = useState<any>("");
   const [driveUser, setDriveUser] = useState<any>(null);
+  const [setupReady,setSetupReady]=useState(false);
+  const [slotsLoadedDate,setSlotsLoadedDate]=useState("");
+  const slotRequests=useRef(new Map<string,{id:number;promise:Promise<any>}>());
+  const slotRequestId=useRef(0);
   const [slotLoading, setSlotLoading] = useState<any>(false);
   const [slotError, setSlotError] = useState<any>("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [reconnecting, setReconnecting] = useState<any>(false);
+  const [savedRosterSignature, setSavedRosterSignature] = useState(JSON.stringify(ROSTERS));
   const mobileTimetableSyncRef = useRef(new Set());
+  const legacyTimetable = timetable.filter(lesson => !Object.values(mixedDocument.groups).some(group => matchesMixedGroup(group, lesson)));
+  const legacyAssignedLessons = (settings.assignedLessons || []).filter(lesson => !Object.values(mixedDocument.groups).some(group => matchesMixedGroup(group, lesson)));
   const rosterKeySignature = useMemo(
-    () => rosterKeysFromTimetable(timetable, settings.assignedLessons).join("\t"),
-    [timetable, JSON.stringify(settings.assignedLessons || [])],
+    () => rosterKeysFromTimetable(legacyTimetable, legacyAssignedLessons).join("\t"),
+    [timetable, JSON.stringify(settings.assignedLessons || []), mixedDocument],
   );
 
   // Visible feedback for menu actions. The log dock is hidden by default, so
@@ -112,13 +134,17 @@ function App() {
 
   const refreshSlots = (dateStr = toIsoDate(date), options: { attempts?: number; silentRetry?: boolean; force?: boolean } = {}) => {
     if (!(window.__isPywebview && window.__isPywebview())) return Promise.resolve();
+    const requestKey=`${dateStr}/${!!options.force}`;
+    const existing=slotRequests.current.get(requestKey);
+    if(existing?.id===slotRequestId.current)return existing.promise;
+    const requestId=++slotRequestId.current;
     const attempts = options.attempts || 3;
     setSlotLoading(true);
     setSlotError("");
     const run = (attempt) => window.pywebview!.api.get_today_slots(dateStr, !!options.force)
       .then(raw => {
         const data = parseJsonResult(raw);
-        if (Array.isArray(data)) setSlots(data);
+        if (Array.isArray(data)&&requestId===slotRequestId.current) {setSlots(data);setSlotsLoadedDate(dateStr);}
         return data;
       })
       .catch(err => {
@@ -129,10 +155,48 @@ function App() {
           return sleep(600 * attempt).then(() => run(attempt + 1));
         }
         const message = formatApiError(err);
-        setSlotError(message);
+        if(requestId===slotRequestId.current)setSlotError(message);
         appendLog("오류", `수업 불러오기 실패: ${message}`);
       });
-    return run(1).finally(() => setSlotLoading(false));
+    const promise=run(1).finally(()=>{if(slotRequests.current.get(requestKey)?.id===requestId)slotRequests.current.delete(requestKey);if(requestId===slotRequestId.current)setSlotLoading(false);});
+    slotRequests.current.set(requestKey,{id:requestId,promise});return promise;
+  };
+
+  const loadMixedGroups = async () => {
+    if (!window.pywebview?.api) return;
+    setMixedEncryption(false);
+    const data = parseJsonResult(await window.pywebview.api.get_mixed_groups());
+    if (data.document?.schemaVersion !== 1) throw new Error("혼합수업 형식을 지원하지 않습니다. 체크온을 업데이트해 주세요.");
+    setMixedDocument(data.document); setMixedEncryption(!!data.encryptionEnabled);
+    return data.document as MixedDocument;
+  };
+  const saveMixedGroup = async (payload) => {
+    if (!window.pywebview?.api) throw new Error("데스크톱 앱에서 암호화를 연결한 후 저장해 주세요.");
+    const data = parseJsonResult(await window.pywebview.api.save_mixed_group(JSON.stringify(payload)));
+    setMixedDocument(data.document);
+    await refreshSlots(toIsoDate(date));
+    appendLog("완료", "혼합수업 명부 저장 완료");
+    return data;
+  };
+  const importMixedStudents = async (grade) => {
+    if (!window.pywebview?.api) return { cancelled: true };
+    return parseJsonResult(await window.pywebview.api.import_mixed_students_file(grade));
+  };
+  const bindMixedGroup = async (group: MixedGroup, schedule?: {day:string;period:number}) => {
+    if ((settings.timetableMode || "neis") === "neis") {
+      if ((settings.assignedLessons || []).some(lesson => matchesMixedGroup(group, lesson))) return;
+      const next = {...settings, assignedLessons:[...(settings.assignedLessons || []), {grade:group.grade,classNo:group.classNo,subjectName:group.subjectName,neisSubjectLabel:group.neisSubjectLabel || group.subjectName,subjectAliases:[]}]};
+      if(window.pywebview?.api) parseJsonResult(await window.pywebview.api.save_settings(JSON.stringify(settingsToApi(next))));
+      setSettings(next);
+    } else {
+      if(timetable.some(lesson => matchesMixedGroup(group,lesson))) return;
+      if(!schedule) throw new Error("명단은 저장되었습니다. 시간표에서 이 학급의 요일과 교시를 지정해 주세요.");
+      if(timetable.some(l=>l.day===schedule.day && Number(l.period)===schedule.period)) throw new Error("명단은 저장되었습니다. 해당 교시에 다른 수업이 있어 시간표에서 조정해 주세요.");
+      const next=[...timetable,{...schedule,grade:group.grade,classNo:group.classNo,subject:group.subjectName,neis:group.neisSubjectLabel || group.subjectName}];
+      if(window.pywebview?.api) parseJsonResult(await window.pywebview.api.save_timetable_tsv(timetableRowsToTsv(next),settings.effectiveFrom));
+      setTimetable(next);
+    }
+    mobileTimetableSyncRef.current.clear();
   };
 
   const loadSetupData = () => {
@@ -140,6 +204,8 @@ function App() {
       appendLog("안내", "브라우저 미리보기에서는 샘플 설정을 사용합니다");
       return Promise.resolve();
     }
+    ++slotRequestId.current;
+    setSetupReady(false);setSlotsLoadedDate("");setSlotLoading(true);setSlots([]);
     appendLog("안내", "설정을 불러오는 중...");
     return window.pywebview!.api.get_drive_user()
       .then(userRaw => window.pywebview!.api.get_settings().then(settingsRaw => ({ userRaw, settingsRaw })))
@@ -161,27 +227,30 @@ function App() {
       setCloseAfter(loadedSettings.closeByDefault);
       setTimetable(loadedTimetable);
       setRosters(syncRostersToTimetable(loadedRosters, loadedTimetable, loadedSettings.assignedLessons));
+      setSavedRosterSignature(JSON.stringify(syncRostersToTimetable(loadedRosters, loadedTimetable, loadedSettings.assignedLessons)));
       appendLog("완료", `설정 불러오기 완료 · ${loadedUser.emailAddress || "계정 미확인"} · 수업 ${loadedTimetable.length}개`);
-      return refreshSlots(toIsoDate(date));
-    }).catch(err => appendLog("오류", `설정 불러오기 실패: ${formatApiError(err)}`));
+      return loadMixedGroups().then(() => setSetupReady(true));
+    }).catch(err => {setSlotLoading(false);setSlotError(formatApiError(err));appendLog("오류", `설정 불러오기 실패: ${formatApiError(err)}`);});
   };
 
   useEffect(() => {
-    setRosters(prev => syncRostersToTimetable(prev, timetable, settings.assignedLessons));
+    setRosters(prev => syncRostersToTimetable(prev, legacyTimetable, legacyAssignedLessons));
   }, [rosterKeySignature]);
 
-  const saveSettings = (successMessage = "기본 정보 저장됨") => {
+  const saveSettings = (successMessage = "기본 정보 저장됨", settingsSnapshot = settings) => {
     if (!(window.__isPywebview && window.__isPywebview())) {
+      setSettings(settingsSnapshot);
       appendLog("완료", `${successMessage} (미리보기)`);
       return Promise.resolve();
     }
-    return window.pywebview!.api.save_settings(JSON.stringify(settingsToApi(settings)))
+    return window.pywebview!.api.save_settings(JSON.stringify(settingsToApi(settingsSnapshot)))
       .then(raw => {
         parseJsonResult(raw);
+        setSettings(settingsSnapshot);
         appendLog("완료", successMessage);
         return refreshSlots(toIsoDate(date));
       })
-      .catch(err => appendLog("오류", `기본 정보 저장 실패: ${formatApiError(err)}`));
+      .catch(err => {appendLog("오류", `기본 정보 저장 실패: ${formatApiError(err)}`);throw err;});
   };
 
   const saveTimetable = () => {
@@ -189,13 +258,13 @@ function App() {
       appendLog("완료", "시간표 저장됨 (미리보기)");
       return;
     }
-    window.pywebview!.api.save_timetable_tsv(timetableRowsToTsv(timetable), settings.effectiveFrom)
+    return window.pywebview!.api.save_timetable_tsv(timetableRowsToTsv(timetable), settings.effectiveFrom)
       .then(raw => {
         parseJsonResult(raw);
         appendLog("완료", "시간표 저장됨");
         return refreshSlots(toIsoDate(date));
       })
-      .catch(err => appendLog("오류", `시간표 저장 실패: ${formatApiError(err)}`));
+      .catch(err => {appendLog("오류", `시간표 저장 실패: ${formatApiError(err)}`);throw err;});
   };
 
   const previewNeisPublicTimetable = (payload) => {
@@ -205,7 +274,6 @@ function App() {
       schoolName: payload.schoolName || settings.schoolName,
       schoolCode: payload.schoolCode || settings.schoolCode,
       schoolKind: payload.schoolKind || settings.schoolKind,
-      apiKey: payload.apiKey || neisApiKey,
     };
     if (!(window.__isPywebview && window.__isPywebview())) {
       const targetDay = ["일","월","화","수","목","금","토"][new Date(`${request.date}T00:00:00`).getDay()];
@@ -226,7 +294,6 @@ function App() {
       schoolName: payload.schoolName || settings.schoolName,
       schoolCode: payload.schoolCode || settings.schoolCode,
       schoolKind: payload.schoolKind || settings.schoolKind,
-      apiKey: payload.apiKey || neisApiKey,
     };
     if (!(window.__isPywebview && window.__isPywebview())) {
       const input = normalizeSubjectName(request.subjectName || "");
@@ -246,7 +313,6 @@ function App() {
     const request = {
       region: (payload && payload.region) || settings.region,
       schoolName: (payload && payload.schoolName) || settings.schoolName,
-      apiKey: (payload && payload.apiKey) || neisApiKey,
     };
     if (!(window.__isPywebview && window.__isPywebview())) {
       appendLog("안내", "브라우저 미리보기에서는 예시 학교 목록을 보여줍니다");
@@ -257,16 +323,6 @@ function App() {
     }
     return window.pywebview!.api.search_schools(JSON.stringify(request))
       .then(raw => parseJsonResult(raw));
-  };
-
-  const saveNeisApiKey = () => {
-    if (!(window.__isPywebview && window.__isPywebview())) {
-      appendLog("완료", "NEIS Open API 키 저장 완료 (미리보기)");
-      return Promise.resolve();
-    }
-    return window.pywebview!.api.save_neis_api_key(neisApiKey)
-      .then(() => appendLog("완료", "NEIS Open API 키 로컬 저장 완료"))
-      .catch(err => appendLog("오류", `NEIS Open API 키 저장 실패: ${formatApiError(err)}`));
   };
 
   const savePassword = (pw: string) => {
@@ -296,33 +352,81 @@ function App() {
       .catch(err => {
         mobileTimetableSyncRef.current.delete(weekKey);
         appendLog("오류", `모바일용 시간표 갱신 실패: ${formatApiError(err)}`);
+        throw err;
       });
   };
 
   useEffect(() => {
-    if (page !== "run") return;
+    if (page !== "run" || !setupReady || slotLoading || slotsLoadedDate!==toIsoDate(date)) return;
     if ((settings.timetableMode || "neis") !== "neis") return;
     if (!(settings.assignedLessons || []).length) return;
     if (typeof window.__onPywebviewReady !== "function") return;
-    let cancelled = false;
-    const targetDate = toIsoDate(date);
-    window.__onPywebviewReady(() => {
-      if (!cancelled) publishNeisTimetableForMobile(targetDate, { once: true, silent: true });
-    });
-    return () => { cancelled = true; };
-  }, [page, date, settings.timetableMode, settings.region, settings.schoolName, JSON.stringify(settings.assignedLessons || [])]);
+    const targetDate=toIsoDate(date);
+    const timer=window.setTimeout(()=>{publishNeisTimetableForMobile(targetDate,{once:true,silent:true}).catch(()=>{});},1500);
+    return()=>window.clearTimeout(timer);
+  }, [page,date,setupReady,slotLoading,slotsLoadedDate,settings.timetableMode,settings.region,settings.schoolName,JSON.stringify(settings.assignedLessons || [])]);
 
-  const saveRosters = () => {
+  const saveRosters = (nextRosters = rosters) => {
+    const snapshot = nextRosters;
     if (!(window.__isPywebview && window.__isPywebview())) {
       appendLog("완료", "학생 명부 저장됨 (미리보기)");
-      return;
+      setSavedRosterSignature(JSON.stringify(snapshot));
+      setRosters(snapshot);
+      return Promise.resolve();
     }
-    window.pywebview!.api.save_students_tsv(rostersToTsv(syncRostersToTimetable(rosters, timetable, settings.assignedLessons)))
+    return window.pywebview!.api.save_students_tsv(rostersToTsv(snapshot))
       .then(raw => {
         parseJsonResult(raw);
         appendLog("완료", "학생 명부 저장됨");
+        setSavedRosterSignature(JSON.stringify(snapshot));
+      setRosters(snapshot);
       })
-      .catch(err => appendLog("오류", `학생 명부 저장 실패: ${formatApiError(err)}`));
+      .catch(err => { appendLog("오류", `학생 명부 저장 실패: ${formatApiError(err)}`); throw err; });
+  };
+
+  const removeClass = async (key:string) => {
+    if(window.__isPywebview?.()) {
+      parseJsonResult(await window.pywebview!.api.remove_class(key));
+      mobileTimetableSyncRef.current.clear();
+      await loadSetupData();
+    } else {
+      const group=key.startsWith("mixed:")?mixedDocument.groups[key.slice(6)]:null;
+      const removed=(l:any)=>group?matchesMixedGroup(group,l):`${l.grade}-${l.classNo}`===key;
+      setTimetable(prev=>prev.filter(l=>!removed(l)));
+      setSettings(prev=>({...prev,assignedLessons:(prev.assignedLessons||[]).filter(l=>!removed(l))}));
+      setRosters(prev=>Object.fromEntries(Object.entries(prev).filter(([k])=>k!==key)));
+      if(group)setMixedDocument(prev=>({...prev,groups:{...prev.groups,[group.id]:{...group,archived:true}}}));
+    }
+    appendLog("완료","학급과 모든 기간의 출결·명부를 삭제했습니다.");
+  };
+
+  const addClasses = async ({ grade, classNos, subject, day, period }) => {
+    const assigned = [...(settings.assignedLessons || [])];
+    const nextTimetable = [...timetable];
+    for (const classNo of classNos) {
+      if (!assigned.some(l => Number(l.grade) === grade && l.classNo === classNo && l.subjectName === subject)) assigned.push({ grade, classNo, subjectName: subject, neisSubjectLabel: subject, subjectAliases: [] });
+      if ((settings.timetableMode || "neis") === "manual") {
+        if (nextTimetable.some(l => l.day === day && Number(l.period) === period && Number(l.grade)===grade && l.classNo===classNo && l.subject===subject)) continue;
+        if (nextTimetable.some(l => l.day === day && Number(l.period) === period)) throw new Error("해당 요일·교시에 이미 수업이 있습니다. 시간표 설정에서 확인해 주세요.");
+        nextTimetable.push({ grade, classNo, subject, neis:subject, day, period });
+      }
+    }
+    const nextSettings = { ...settings, assignedLessons: assigned };
+    if (window.pywebview?.api) {
+      parseJsonResult(await window.pywebview.api.save_settings(JSON.stringify(settingsToApi(nextSettings))));
+      if ((settings.timetableMode || "neis") === "manual") parseJsonResult(await window.pywebview.api.save_timetable_tsv(timetableRowsToTsv(nextTimetable), settings.effectiveFrom));
+    }
+    setSettings(nextSettings); setTimetable(nextTimetable);
+    setRosters(prev => syncRostersToTimetable(prev, nextTimetable, assigned));
+    mobileTimetableSyncRef.current.clear();
+    return `${grade}-${classNos[0]}`;
+  };
+
+  const startRange = async (history) => {
+    if (!window.pywebview?.api) throw new Error("나이스 반영은 데스크톱 앱에서 실행해 주세요.");
+    setRunning(true); setProgress({ done:0, total:0, current:"준비 중", state:"running" });
+    try { parseJsonResult(await window.pywebview.api.start_range_run(history.start, history.end, password, history.token)); }
+    catch (e) { setRunning(false); throw e; }
   };
 
   const importRosterFile = (klass) => {
@@ -337,19 +441,19 @@ function App() {
     return window.pywebview!.api.import_students_file(klass)
       .then(raw => {
         const data = parseJsonResult(raw);
-        if (data.cancelled) return;
-        setRosters(prev => ({ ...prev, [data.classKey]: data.students || [] }));
-        appendLog("완료", `${data.classKey} 명부 파일 가져오기 완료 · ${(data.students || []).length}명`);
+        return data;
       })
-      .catch(err => appendLog("오류", `명부 파일 가져오기 실패: ${formatApiError(err)}`));
+      .catch(err => { appendLog("오류", `명부 파일 가져오기 실패: ${formatApiError(err)}`); throw err; });
   };
 
-  const saveSlotAttendance = (slotId, marks) => {
+  const saveSlotAttendance = (slotId, marks, snapshot = null as any) => {
     if (!(window.__isPywebview && window.__isPywebview())) {
       appendLog("완료", "attendance 저장 완료 (미리보기)");
       return Promise.resolve({ ok: true, checkedAt: new Date().toISOString() });
     }
-    return window.pywebview!.api.save_slot_attendance(toIsoDate(date), slotId, JSON.stringify(marks))
+    const slot = snapshot || slots.find(s => s.id === slotId);
+    const expectedCheckedAt = slot?.checkedAt ?? "";
+    return window.pywebview!.api.save_slot_attendance(toIsoDate(date), slotId, JSON.stringify(marks), expectedCheckedAt, slot?.groupId ?? null, slot?.rosterRevision ?? null)
       .then(raw => {
         const data = parseJsonResult(raw);
         appendLog("완료", "출결 저장됨");
@@ -390,8 +494,9 @@ function App() {
     }
   }, []);
 
-  /* pywebview 환경에서 선택 날짜 슬롯 로드 */
+  /* Load the selected date only after account/setup reads have finished. */
   useEffect(() => {
+    if(!setupReady)return;
     if (typeof window.__onPywebviewReady !== "function") return;
     let cancelled = false;
     const dateStr = toIsoDate(date);
@@ -399,7 +504,7 @@ function App() {
       if (!cancelled) refreshSlots(dateStr);
     });
     return () => { cancelled = true; };
-  }, [date]);
+  }, [date,setupReady]);
 
   /* pywebview 환경에서 Drive 설정/시간표/명부 로드 */
   useEffect(() => {
@@ -417,9 +522,7 @@ function App() {
       window.pywebview!.api.get_password().then(pw => {
         if (!cancelled && pw) setPassword(pw);
       });
-      window.pywebview!.api.get_neis_api_key().then(key => {
-        if (!cancelled && key) setNeisApiKey(key);
-      });
+
     });
     return () => { cancelled = true; };
   }, []);
@@ -445,7 +548,7 @@ function App() {
       setRunning(true);
       setProgress({ done: 0, total: pending.length, current: "", state: "running" });
       appendLog("안내", `NEIS 반영 실행 — 대상 ${pending.length}건`);
-      window.pywebview!.api.start_run(toIsoDate(date), password, closeAfter);
+      window.pywebview!.api.start_run(toIsoDate(date), password, closeAfter).then(parseJsonResult).catch(err => { setRunning(false); appendLog("오류", formatApiError(err)); });
       return;
     }
 
@@ -481,6 +584,7 @@ function App() {
   }));
   const sidebarName = driveUser?.displayName || driveUser?.emailAddress || "교과 담당교사";
   const sidebarInitial = sidebarName.trim().slice(0, 1) || "교";
+
 
   return (
     <div className="app">
@@ -526,7 +630,7 @@ function App() {
         ))}
 
         <button className="sb-loglink" onClick={() => setShowOnboarding(true)}>시작 가이드</button>
-        <button className="sb-loglink" onClick={() => setShowPrivacy(true)}>개인정보처리방침</button>
+        <button className="sb-loglink" onClick={() => setShowPrivacy(true)}>개인정보 · 이용 안내</button>
         <button className="sb-loglink" onClick={() => setLogOpen(o => !o)}>진행 기록</button>
         <button className="sb-loglink" onClick={loadSetupData}>설정 다시 불러오기</button>
 
@@ -543,10 +647,12 @@ function App() {
       </aside>
 
       <main className="main">
-        {page === "run"       && <RunView {...{date,setDate,password,setPassword,savePassword,closeAfter,setCloseAfter,slots,setSlots,rosters,running,progress,runLog:logLines,startRun,saveSlotAttendance,deleteSlotAttendance,appendLog,refreshSlots,publishNeisTimetableForMobile,slotLoading,slotError}}/>}
+        {page === "run" && <RegistrationView password={password} setPassword={setPassword} running={running} progress={progress} runLog={logLines} onStart={startRange} dayView={<RunView embedded onHistory={() => setPage("history")} {...{date,setDate,password,setPassword,savePassword,closeAfter,setCloseAfter,slots,setSlots,rosters,running,progress,runLog:logLines,startRun,saveSlotAttendance,deleteSlotAttendance,appendLog,refreshSlots,publishNeisTimetableForMobile,slotLoading,slotError}}/>}/>}
+        {page === "history" && <HistoryView onDelete={removeClass}/>}
         {page === "basics"    && <BasicsView settings={settings} setSettings={setSettings} driveUser={driveUser} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} searchSchools={searchSchools}/>}
-        {page === "timetable" && <TimetableView rows={timetable} setRows={setTimetable} settings={settings} setSettings={setSettings} neisApiKey={neisApiKey} setNeisApiKey={setNeisApiKey} saveNeisApiKey={saveNeisApiKey} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} saveTimetable={saveTimetable} previewNeisPublicTimetable={previewNeisPublicTimetable} findNeisSubjectCandidates={findNeisSubjectCandidates} publishNeisTimetableForMobile={publishNeisTimetableForMobile}/>}
-        {page === "roster"    && <RosterView rosters={rosters} setRosters={setRosters} appendLog={appendLog} loadSetupData={loadSetupData} saveRosters={saveRosters} importRosterFile={importRosterFile}/>}
+        {page === "timetable" && <TimetableWorkspace mixedDocument={mixedDocument} onClasses={() => setPage("roster")} rows={timetable} setRows={setTimetable} settings={settings} setSettings={setSettings} appendLog={appendLog} loadSetupData={loadSetupData} saveSettings={saveSettings} saveTimetable={saveTimetable} previewNeisPublicTimetable={previewNeisPublicTimetable} findNeisSubjectCandidates={findNeisSubjectCandidates} publishNeisTimetableForMobile={publishNeisTimetableForMobile}/>}
+        <div style={{display:page === "homeroom"?"flex":"none",flex:1,minHeight:0}}>{HOMEROOM_ENABLED && homeOpened && <HomeroomView api={desktopHomeApi} rosters={Object.fromEntries(Object.entries(rosters).map(([key,rows]:[string,any])=>[key,rows.map((s:any)=>({number:s.n,name:s.name}))]))} onClasses={()=>setPage("roster")}/>}</div>
+        {page === "roster" && <ClassManager onDelete={removeClass} mixedDocument={mixedDocument} encryptionEnabled={mixedEncryption} onSaveMixed={saveMixedGroup} onImportMixed={importMixedStudents} onBindMixed={bindMixedGroup} rosters={rosters} onSave={saveRosters} onImport={importRosterFile} onAddClasses={addClasses} manual={settings.timetableMode === "manual"} onTimetable={() => setPage("timetable")}/>}
         {page === "connect"   && <ConnectionView driveUser={driveUser} reconnect={reconnect} reconnecting={reconnecting} loadSetupData={loadSetupData}/>}
       </main>
 
@@ -555,8 +661,8 @@ function App() {
           steps={[
             { key: "connect", title: "구글 계정 연결", desc: "출결을 내 Google Drive에 저장합니다.", done: !!driveUser },
             { key: "basics", title: "학교 찾기", desc: "기본 정보에서 학교를 찾아 확정하세요.", done: !!(settings && settings.schoolCode) },
-            { key: "timetable", title: "시간표 준비", desc: "NEIS 키 입력 + 담당 수업 추가.", done: !!neisApiKey && (((settings && settings.assignedLessons) || []).length > 0) },
-            { key: "roster", title: "학생 명부 채우기", desc: "학급에 학생을 입력하세요.", done: Object.values(rosters || {}).some((r: any) => (r || []).length > 0) },
+            { key: "timetable", title: "시간표 준비", desc: "학급·명단에서 담당 학급을 추가하세요.", done: (((settings && settings.assignedLessons) || []).length > 0) },
+            { key: "roster", title: "학급·명단 등록", desc: "담당 반을 추가하고 명단을 채우세요.", done: Object.values(rosters || {}).some((r: any) => (r || []).length > 0) },
             { key: "run", title: "오늘 출결 실행", desc: "날짜 선택 후 NEIS에 반영합니다.", done: false },
           ]}
           onGo={(key) => { setPage(key); closeOnboarding(); }}

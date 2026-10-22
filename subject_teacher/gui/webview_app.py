@@ -8,10 +8,11 @@ from pathlib import Path
 import webview
 
 from subject_teacher.gui.api import Api
+from subject_teacher.gui import startup
 
 
 def _apply_windows_icon(window, icon_path: Path) -> None:
-    """Set the native WinForms window icon (title bar + taskbar).
+    """Set the native icon on the UI thread, before the window is shown.
 
     pywebview's ``webview.start(icon=...)`` is GTK/QT-only, so on Windows the
     running app showed the default form icon in the taskbar. Cosmetic only —
@@ -51,7 +52,7 @@ def start() -> None:
         except Exception:
             pass
 
-    api = Api()
+    api = startup.smoke_api() if os.environ.get("CHECKON_SMOKE_REPORT") else Api()
     window = webview.create_window(
         title="체크온 · 교과 출결",
         url=_html_url(),
@@ -62,6 +63,8 @@ def start() -> None:
         background_color="#F2F2F7",
     )
     api.set_window(window)
+    startup.log.info("window_created")
+    startup.monitor(window)
 
     # Window / taskbar icon (체크온). pywebview has no per-tab favicon — a
     # chromeless window shows no HTML <link rel=icon> — so set the window icon
@@ -71,7 +74,9 @@ def start() -> None:
     if not icon_path.exists():
         icon_path = here.parent / "neis_attendance" / "public" / "favicon.ico"
     if icon_path.exists() and sys.platform == "win32":
-        window.events.shown += lambda: _apply_windows_icon(window, icon_path)
+        # before_show runs synchronously on the WinForms UI thread. shown
+        # handlers run on a worker and assigning Icon there can deadlock CLR.
+        window.events.before_show += lambda: _apply_windows_icon(window, icon_path)
     try:
         if icon_path.exists():
             # GTK/QT path; ignored on Windows (handled via the shown event above).

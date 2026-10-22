@@ -12,11 +12,15 @@ const formatSavedAt = (isoDate) => {
   return `마지막 저장 ${hh}:${mm}`;
 };
 
-const summarizeMarks = (marks) => {
+const summarizeMarks = (marks, students: any[] = []) => {
   const items = Object.entries(marks || {})
     .filter(([, mark]) => mark && mark !== "present")
     .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([number, mark]) => `${number}번 ${mark === "excused" ? "인정결과" : "결과"}`);
+    .map(([number, mark]) => {
+      const student = students.find(s => String(s.n) === number);
+      const label = student?.homeClassNo ? `${student.homeClassNo}반 ${student.number}번` : `${number}번`;
+      return `${label} ${mark === "excused" ? "인정결과" : "결과"}`;
+    });
   return items.length ? items.join(", ") : "저장하면 전원 출석";
 };
 
@@ -54,8 +58,8 @@ const MARK_OPTIONS: Array<{ value: string; label: string; color: string }> = [
 ];
 
 /* Student-check sheet (modal) */
-const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendLog }) => {
-  const students = rosters[slot.roster] || ROSTERS[slot.roster] || [];
+export const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendLog }) => {
+  const students = slot.groupId ? (slot.mixedStudents || []).map(s => ({ ...s, n: s.studentId })).sort((a, b) => Number(a.homeClassNo) - Number(b.homeClassNo) || a.number - b.number) : rosters[slot.roster] || ROSTERS[slot.roster] || [];
   const [marks, setMarks] = useState<any>(() => ({ ...currentMarks }));
   const [filter, setFilter] = useState<any>("all");
   const [saving, setSaving] = useState<any>(false);
@@ -83,7 +87,7 @@ const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendL
   const save = () => {
     setSaving(true);
     setSaveError("");
-    Promise.resolve(onSaveMarks(slot.id, marks, counts))
+    Promise.resolve(onSaveMarks(slot.id, marks, counts, slot))
       .then(() => {
         appendLog("완료", `${slot.grade}-${slot.classNo} ${slot.subject} 저장됨 (결과 ${counts.absent}, 인정결과 ${counts.excused})`);
         onClose();
@@ -136,7 +140,7 @@ const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendL
 
           <div className="save-summary-box">
             <strong>저장 전 요약</strong>
-            <span>{summarizeMarks(marks)}</span>
+            <span>{summarizeMarks(marks, students)}</span>
           </div>
           {saveError && (
             <div className="save-summary-box error">
@@ -149,8 +153,8 @@ const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendL
             {filtered.map(s => {
               const m = marks[s.n] || "present";
               return (
-                <div key={s.n} className="stu-row" data-mark={m} style={{cursor:"default"}}>
-                  <span className="n">{s.n}</span>
+                <div key={s.n} className="stu-row" data-mark={m} style={{cursor:"default", ...(slot.groupId ? { gridTemplateColumns: "72px 1fr auto" } : {})}}>
+                  <span className="n">{slot.groupId ? `${s.homeClassNo}반 ${s.number}번` : s.n}</span>
                   <span className="nm">{s.name}</span>
                   <div style={{display:"flex",gap:4,alignItems:"center"}}>
                     {MARK_OPTIONS.map(opt => (
@@ -191,7 +195,7 @@ const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendL
         </div>
         <div className="sheet-foot">
           <button className="tb-btn" onClick={onClose} disabled={saving}>취소</button>
-          <button className="tb-btn primary" onClick={save} disabled={saving}>
+          <button className="tb-btn primary" onClick={save} disabled={saving || (slot.groupId && !students.length)}>
             <Icon name={saving ? "clock" : "check"} size={14}/> {saving ? "저장 중…" : "저장"}
           </button>
         </div>
@@ -201,7 +205,7 @@ const ClassSheet = ({ slot, rosters, onClose, onSaveMarks, currentMarks, appendL
 };
 
 export const RunView = ({ date, setDate, password, setPassword, savePassword, closeAfter, setCloseAfter,
-                   slots, setSlots, rosters, running, progress, runLog, startRun, saveSlotAttendance, deleteSlotAttendance, appendLog, refreshSlots, publishNeisTimetableForMobile, slotLoading, slotError }) => {
+                   slots, setSlots, rosters, running, progress, runLog, startRun, saveSlotAttendance, deleteSlotAttendance, appendLog, refreshSlots, publishNeisTimetableForMobile, slotLoading, slotError, onHistory = () => {}, embedded = false }) => {
   const [openSlot, setOpenSlot] = useState<any>(null);
   const [marksById, setMarksById] = useState<any>({});
   const [boganOpen, setBoganOpen] = useState<any>(false);
@@ -275,9 +279,9 @@ export const RunView = ({ date, setDate, password, setPassword, savePassword, cl
   const pending = slots.filter(s => s.checked && !s.synced).length;
   const absent = slots.reduce((a, s) => a + (s.absences || 0), 0);
 
-  const onSaveMarks = (id, marks, counts) => {
+  const onSaveMarks = (id, marks, counts, snapshot) => {
     const absCount = counts ? counts.absent + counts.excused : Object.values(marks).filter(v => v && v !== "present").length;
-    return Promise.resolve(saveSlotAttendance(id, marks)).then((saved) => {
+    return Promise.resolve(saveSlotAttendance(id, marks, snapshot)).then((saved) => {
       const checkedAt = saved?.checkedAt || new Date().toISOString();
       setMarksById(m => ({ ...m, [id]: marks }));
       setSlots(prev => prev.map(s => s.id === id ? { ...s, checked: true, absences: absCount, checkedAt, marks, note: absCount ? `결과·인정결과 ${absCount}명` : "전원 출석" } : s));
@@ -286,11 +290,12 @@ export const RunView = ({ date, setDate, password, setPassword, savePassword, cl
 
   return (
     <>
-      <div className="topbar">
+      <div className={embedded ? "mg-day-toolbar" : "topbar"}>
         <Icon name="bolt" size={16}/>
-        <span className="title">오늘 출결</span>
+        {!embedded && <span className="title">NEIS 출결 등록</span>}
         <span className="sub">· 선택한 날짜의 수업을 확인하고 NEIS에 반영합니다</span>
         <div className="topbar-actions">
+          <button className="tb-btn" onClick={onHistory}>출결 내역</button>
           <button className="tb-btn" onClick={openBoganAdd}>
             <Icon name="plus" size={14}/> 보강 추가
           </button>
@@ -398,7 +403,7 @@ export const RunView = ({ date, setDate, password, setPassword, savePassword, cl
                 body="시간표 탭의 담당 수업, 과목명, 학년·반 또는 선택 날짜를 확인하세요." />
             ) : slots.map(s => (
               <div key={s.id} className="list-row" style={{gridTemplateColumns:"80px 1.6fr 80px 80px 130px 1fr auto"}}
-                   onClick={() => s.adhoc ? openBoganEdit(s) : setOpenSlot(s)}>
+                   onClick={() => s.adhoc && !s.groupId ? openBoganEdit(s) : setOpenSlot(s)}>
                 <div className="period">
                   <span className="p-num">{s.period}</span>
                 </div>
@@ -432,7 +437,7 @@ export const RunView = ({ date, setDate, password, setPassword, savePassword, cl
           slot={openSlot}
           rosters={rosters}
           onClose={() => setOpenSlot(null)}
-          currentMarks={marksById[openSlot.id] || openSlot.marks || {}}
+          currentMarks={openSlot.marks || {}}
           onSaveMarks={onSaveMarks}
           appendLog={appendLog}
         />
