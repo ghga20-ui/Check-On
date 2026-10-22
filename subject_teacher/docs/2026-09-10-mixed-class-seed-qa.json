@@ -1,0 +1,14 @@
+{
+  "score": 0.93,
+  "verdict": "pass",
+  "dimensions": {
+    "correctness": 0.94,
+    "completeness": 0.92,
+    "quality": 0.93,
+    "intent_alignment": 0.96,
+    "domain_specific": 0.90
+  },
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "주 세션의 로컬 단회 문서 검토입니다. 기준 0.90. Seed와 연결 상세 명세를 함께 평가했습니다. 사용자 승인 범위, 기존 통합학급 보존, 수업 집단/원소속 반 분리, 명부 이력, 암호화 경계, 학생별 NEIS 검증 및 구버전·동시 수정 대응이 일관됩니다. 신규 테스트 작성 의무와 실제 검증 대기 상태가 명시되었으며 YAML 파싱은 통과했습니다. 이 점수는 구현이나 법률 준수 검증 결과가 아닙니다."
+}

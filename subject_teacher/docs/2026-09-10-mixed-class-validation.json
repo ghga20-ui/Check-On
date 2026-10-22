@@ -1,0 +1,14 @@
+{
+  "status": "pending",
+  "checkedAt": null,
+  "desktopVersion": null,
+  "mobileVersion": null,
+  "checks": {
+    "distinctStudents": {"passed": false, "evidence": "실제 기기 검증 대기"},
+    "reload": {"passed": false, "evidence": "실제 기기 검증 대기"},
+    "filterPersistence": {"passed": false, "evidence": "실제 기기 검증 대기"},
+    "neisSavedRows": {"passed": false, "evidence": "사용자가 지정한 실제 수업의 저장 검증 대기"},
+    "idempotency": {"passed": false, "evidence": "실제 화면 재실행 검증 대기"},
+    "legacyClass": {"passed": false, "evidence": "실제 기기 회귀 검증 대기"}
+  }
+}

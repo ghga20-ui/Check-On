@@ -1,0 +1,52 @@
+goal: 기존 통합학급의 명부·출결·사용 방식을 유지하면서, 새로 추가하는 같은 학년의 혼합수업에 명부 가져오기·수정, 모바일 반별 출결 표시, 암호화 필수 동기화, NEIS 학년·반·번호 기반 정확한 입력을 지원합니다.
+constraints:
+  - 기존 통합학급은 재등록·과거 출결 변환 없이 유지합니다.
+  - 신규 혼합수업은 같은 학년만 지원하며 CSV/XLSX 분리열·합쳐진 학번 및 수동 입력을 제공합니다.
+  - 학생 이름은 PC 로컬에만 저장하고 신규 혼합수업의 클라우드 데이터는 E2E 암호화합니다.
+  - 기존 Google Drive appDataFolder, 기기 연결, 조건부 저장·충돌 보호를 재사용합니다.
+  - 상세 계약은 subject_teacher/docs/2026-09-10-mixed-class-spec.md를 따릅니다.
+  - 실제 NEIS 시험 대상은 실행 전에 사용자와 지정하며 검증 전 성공을 주장하지 않습니다.
+acceptance_criteria:
+  - description: 기존 통합학급 보존과 신규 혼합 명부·출결·암호화·학생별 자동 입력 계약이 성립합니다.
+    verify: py -3.14 -m pytest tests/test_mixed_class.py tests/test_subject_teacher_state.py tests/test_app_service.py tests/test_neis_runner.py tests/test_subject_commands_selectors.py tests/test_drive_schemas.py tests/test_drive_migrations.py tests/test_drive_store.py tests/test_attendance_concurrency.py tests/test_drive_snapshot.py -q
+    artifacts: [tests/test_mixed_class.py]
+    expect: NONE
+  - description: PC에서 신규 유형 선택과 명부 미리보기·수정·갱신을 사용할 수 있습니다.
+    verify: npm --prefix subject_teacher/neis_attendance test
+    artifacts: [subject_teacher/neis_attendance/src/mixed-class.test.tsx]
+    expect: NONE
+  - description: 모바일에서 반별 동일번호 학생의 출결이 필터·저장·재접속·오프라인 재전송 후에도 구분됩니다.
+    verify: npm --prefix subject_teacher_pwa test
+    artifacts: [subject_teacher_pwa/src/mixed-class.test.tsx]
+    expect: NONE
+  - description: 실제 모바일과 NEIS에서 정확한 학생별 저장·재실행·기존 통합학급 동작이 확인됩니다.
+    verify: py -3.14 -m pytest tests/test_mixed_class_evidence.py -q
+    artifacts: [tests/test_mixed_class_evidence.py, subject_teacher/docs/2026-09-10-mixed-class-validation.json]
+    expect: NONE
+ontology_schema:
+  name: CheckOnMixedClass
+  description: 수업 집단과 원소속 반을 분리하고 명부 이력에 연결한 출결을 처리합니다.
+  fields:
+    - {name: teachingGroups, type: array, description: 수업 ID·유형·공통 학년·이름·NEIS 선택 정보}
+    - {name: rosterVersions, type: array, description: 수업별 버전과 학생 ID·학년·원소속 반·번호 대응표 및 과거 이력}
+    - {name: localNames, type: object, description: PC 로컬 전용 학생 ID와 이름 대응표}
+    - {name: attendance, type: array, description: 날짜·수업·명부 버전·학생 ID·표시·확인 시각·동기화 상태}
+    - {name: importPreview, type: object, description: 열 해석·오류·추가·유지·제외·변경 비교 및 적용 상태}
+    - {name: deviceSync, type: object, description: 암호화 연결·오프라인 초안·충돌 및 계약 버전 상태}
+    - {name: neisRun, type: object, description: 입력 스냅샷·학생별 사전 매칭·저장 검증·실패 상태}
+    - {name: verificationEvidence, type: object, description: 학생 식별정보 없는 실제 연동 검증 결과}
+evaluation_principles:
+  - {name: identity_correctness, description: 다른 반의 같은 번호를 혼동하지 않습니다., weight: 1.0}
+  - {name: preservation, description: 기존 통합학급과 과거 출결 및 충돌 보호를 보존합니다., weight: 1.0}
+  - {name: privacy, description: 이름 미전송과 혼합수업 평문 업로드 차단을 지킵니다., weight: 1.0}
+exit_conditions:
+  - {name: complete, description: 기능 완료, criteria: 모든 자동 검사와 실제 연동 보고서가 통과하고 양쪽 UI 빌드가 성공합니다.}
+  - {name: manual_pending, description: 실제 연동 검증 대기, criteria: 자동 검사 후 실검증 미실시 상태는 완료와 구분해 보고합니다.}
+metadata:
+  approved_date: '2026-09-10'
+  project_type: brownfield
+  workspace: C:/Users/admin/Desktop/2026_project/neis-attendance
+  source: current-thread-approved-interview
+  generation: local-fallback
+  ambiguity_score: null
+  notes: 신규 테스트와 수동 검증 보고서는 구현 단계의 작성 대상이며 현재 통과한 결과가 아닙니다.
